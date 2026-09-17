@@ -417,6 +417,8 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
             new GameContentController(this);
     final SkinRuntimeController skinRuntimeController =
             new SkinRuntimeController(this);
+    final TtsAnnouncer ttsAnnouncer = new TtsAnnouncer(this);
+    final VoiceInputController voiceInputController = new VoiceInputController(this);
     private final SituationScoreController situationScoreController =
             new SituationScoreController(this);
     int selectedGameTab; // 0=棋谱，1=引擎，2=局势图
@@ -528,6 +530,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
                 RECENT_DIR_NAME, CORRECTION_DIR_NAME, PIC_DIR_NAME);
         loadPreferences();
         initializeMoveSounds();
+        ttsAnnouncer.initIfNeeded();
         appRoot = new FrameLayout(this);
         appRoot.setBackgroundColor(globalRootBackgroundColor());
         setContentView(appRoot);
@@ -571,6 +574,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
 
     /** 当前棋盘已完成一步走子或向后导航后，根据新局面选择走子/将军音效。 */
     void playMoveSoundForCurrentPosition(boolean redToMoveNow) {
+        announceLastMoveForBoard(boardView, redToMoveNow);
         if (!soundEnabled || moveSoundPool == null || boardView == null) return;
         boolean checking = XiangqiRules.isInCheck(boardView.copyBoard(), redToMoveNow);
         int soundId = checking ? checkSoundId : moveSoundId;
@@ -1373,6 +1377,10 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         SkinSettingsController.show(this);
     }
 
+    void showTtsSettingsDialog() {
+        TtsSettingsController.show(this);
+    }
+
     interface SkinGridCalibrationListener {
         void onFinished(float[] corners, int pieceSizePercent);
     }
@@ -1748,11 +1756,26 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     }
 
     void playMoveSoundForBoard(ChessBoardView target, boolean redToMoveNow) {
+        announceLastMoveForBoard(target, redToMoveNow);
         if (!soundEnabled || target == null || moveSoundPool == null) return;
         boolean checking = XiangqiRules.isInCheck(target.copyBoard(), redToMoveNow);
         int soundId = checking && checkSoundLoaded ? checkSoundId
                 : (moveSoundLoaded ? moveSoundId : 0);
         if (soundId != 0) moveSoundPool.play(soundId, 1f, 1f, 1, 0, 1f);
+    }
+
+    /**
+     * 走子语音播报：把棋盘上最近一步翻译成中文记谱后交给 TTS 朗读。
+     * 播报由“语音播报设置”的开关独立控制，与音效开关互不影响。
+     */
+    private void announceLastMoveForBoard(ChessBoardView target, boolean redToMoveNow) {
+        if (target == null || ttsAnnouncer == null || !ttsAnnouncer.announceEnabled()) return;
+        Move lastMove = target.lastMove();
+        if (lastMove == null) return;
+        String notation = ChineseNotation.translate(target.copyBoard(), lastMove, true);
+        if (notation == null || notation.length() == 0) return;
+        boolean checking = XiangqiRules.isInCheck(target.copyBoard(), redToMoveNow);
+        ttsAnnouncer.announceMove(notation, checking);
     }
 
     TextView manualNavButton(String text, boolean enabled, View.OnClickListener listener) {
@@ -1975,7 +1998,15 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
                 && humanTurn && !engineThinking && !autoMoveInProgress
                 && !computerSideThinking);
         boardView.setInputEnabled(enabled);
+        if (enabled && !lastHumanTurnSignal) {
+            // 从“不可走”翻到“可走”的瞬间即轮到玩家：通知语音悬浮球开始收音。
+            voiceInputController.notifyHumanTurn();
+        }
+        lastHumanTurnSignal = enabled;
     }
+
+    /** 上一帧棋盘是否处于“玩家可走”状态，用于检测轮次切换触发语音收音。 */
+    private boolean lastHumanTurnSignal;
 
     void selectGameTab(int index) {
         if (boardView != null && boardView.isEditMode()) return;
@@ -3817,6 +3848,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     @Override
     protected void onResume() {
         super.onResume();
+        voiceInputController.onResumeAfterSettings();
         boolean ready = ensureNodeStorageReady(false);
         if (ready) requestGlobalBackgroundRefresh();
         if (ready && gameScreenVisible && boardView != null) applyCurrentSkinToBoard(boardView, false);
@@ -3832,6 +3864,10 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == VoiceInputController.REQ_RECORD_AUDIO) {
+            voiceInputController.onRequestPermissionsResult(requestCode, permissions, grantResults);
+            return;
+        }
         if (requestCode != REQ_NODE_STORAGE_ACCESS) return;
         boolean ready = ensureNodeStorageReady(false);
         if (ready) requestGlobalBackgroundRefresh();
@@ -3849,6 +3885,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
 
     @Override
     protected void onPause() {
+        voiceInputController.pauseBallSession();
         if (gameScreenVisible && !gameOver && !completedDuelGame) {
             persistCurrentSession(true);
         }
@@ -3877,6 +3914,8 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
             moveSoundPool.release();
             moveSoundPool = null;
         }
+        if (ttsAnnouncer != null) ttsAnnouncer.shutdown();
+        if (voiceInputController != null) voiceInputController.shutdown();
         super.onDestroy();
     }
 

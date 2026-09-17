@@ -126,8 +126,16 @@ final class GameActionMenuController {
         rows[4].addView(skinBtn, menuActionLp());
         rows[5].addView(modeBtn, menuActionLp());
         rows[5].addView(soundBtn, menuActionLp());
+        Button voiceBtn = menuActionButton("语音走棋", host.voiceInputController::startVoiceMove, dialog);
+        Button ballBtn = menuActionButton(host.voiceInputController.isFloatingBallEnabled()
+                ? "悬浮球:开" : "悬浮球:关", host.voiceInputController::toggleFloatingBall, dialog);
         rows[6].addView(combinedBtn, menuActionLp());
-        if (host.selfAnalysisMode) rows[6].addView(moveSettingsBtn, menuActionLp());
+        rows[6].addView(voiceBtn, menuActionLp());
+        if (host.selfAnalysisMode) {
+            rows[7].addView(ballBtn, menuActionLp());
+        } else {
+            rows[6].addView(ballBtn, menuActionLp());
+        }
         final TextView arrowMode = buildArrowModeButton();
         Button arrowBtn = menuStayButton(arrowMode.getText().toString());
         arrowBtn.setOnClickListener(v -> {
@@ -150,9 +158,7 @@ final class GameActionMenuController {
         });
         if (host.selfAnalysisMode) {
             rows[7].addView(arrowBtn, menuActionLp());
-            View arrowSpacer = new View(host);
-            arrowSpacer.setEnabled(false);
-            rows[7].addView(arrowSpacer, menuActionLp());
+            rows[7].addView(moveSettingsBtn, menuActionLp());
         } else {
             rows[6].addView(arrowBtn, menuActionLp());
         }

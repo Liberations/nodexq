@@ -348,31 +348,18 @@ final class ManualRecordController {
     void showBoardClipboardDialog() {
         new AlertDialog.Builder(host)
                 .setTitle("棋盘操作")
-                .setItems(new String[]{"复制局面", "复制棋谱", "粘贴", "粘贴（天天象棋URL）", "加入错题本"}, (dialog, which) -> {
+                .setItems(new String[]{"复制局面", "复制棋谱", "粘贴(支持天天象棋URL)", "加入错题本"}, (dialog, which) -> {
                     if (which == 0) copyFen();
                     else if (which == 1) copyManual();
                     else if (which == 2) pasteFromClipboard();
-                    else if (which == 3) pasteTencentUrlFromClipboard();
                     else host.addCurrentPositionToCorrectionBook();
                 })
                 .setNegativeButton("取消", null)
                 .show();
     }
 
-    /** 从剪贴板读取天天象棋分享 URL，调用接口后直接载入为可分析棋谱。 */
-    private void pasteTencentUrlFromClipboard() {
-        ClipboardManager cm = (ClipboardManager) host.getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null
-                || cm.getPrimaryClip().getItemCount() == 0) {
-            Toast.makeText(host, "剪贴板为空", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        CharSequence value = cm.getPrimaryClip().getItemAt(0).coerceToText(host);
-        final String shareUrl = value == null ? "" : value.toString().trim();
-        if (!isTencentQipuUrl(shareUrl)) {
-            Toast.makeText(host, "未识别到包含 QipuId 的天天象棋链接", Toast.LENGTH_LONG).show();
-            return;
-        }
+    /** 调用接口载入天天象棋分享棋谱，并直接进入可分析状态。 */
+    private void loadTencentQipu(String shareUrl) {
         Toast.makeText(host, "正在获取天天象棋棋谱…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             try {
@@ -396,6 +383,25 @@ final class ManualRecordController {
                 host.handler.post(() -> showRecognitionError("天天象棋接口调用失败：" + e.getMessage()));
             }
         }, "ttxq-url-loader").start();
+    }
+
+    /**
+     * 从剪贴板混合文本中提取第一条 http(s) 链接。
+     * 天天象棋分享口令往往在链接前后附带文字、标点或全角字符，
+     * 这里按“http(s):// 到第一个空白或成对括号/引号”的方式截取，兼容链接前后有其他字符的情况。
+     */
+    private static String extractFirstHttpUrl(String text) {
+        if (text == null) return null;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?i)https?://\\S+").matcher(text);
+        if (!matcher.find()) return null;
+        String url = matcher.group();
+        // 链接常被复制时带上结尾的中文标点或全角引号，逐个裁掉。
+        while (url.length() > 0 && "），；（【】“”‘’》。，！？;,.!?".indexOf(
+                url.charAt(url.length() - 1)) >= 0) {
+            url = url.substring(0, url.length() - 1);
+        }
+        return url.length() == 0 ? null : url;
     }
 
     /** 天天象棋分享链接可能经过 URL 编码，识别时兼容大小写和嵌套编码。 */
@@ -655,6 +661,13 @@ final class ManualRecordController {
         CharSequence value = cm.getPrimaryClip().getItemAt(0).coerceToText(host);
         if (value == null) return;
         String text = value.toString().trim();
+        // 剪贴板内容可能是“【链接】https://… QipuId=…”这类混合文本，先提取出 http(s) 链接；
+        // 提取到且包含 QipuId 时走天天象棋接口，否则按棋谱文本继续识别。
+        String extractedUrl = extractFirstHttpUrl(text);
+        if (extractedUrl != null && isTencentQipuUrl(extractedUrl)) {
+            loadTencentQipu(extractedUrl);
+            return;
+        }
         try {
             if (isStandaloneFenOrMoves(text)) {
                 String normalizedText = text.trim().replaceAll("\\s+", " ");

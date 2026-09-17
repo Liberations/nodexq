@@ -50,12 +50,13 @@ final class SettingsController {
             titleTapCount[0] = 0;
             showHiddenRatingResetDialog();
         });
-        String[] items = new String[]{"日志信息", "皮肤设置", "关于应用"};
+        String[] items = new String[]{"日志信息", "皮肤设置", "语音播报设置", "关于应用"};
         new AlertDialog.Builder(host)
                 .setCustomTitle(title)
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) showLogDialog();
                     else if (which == 1) host.showSkinSettingsDialog();
+                    else if (which == 2) host.showTtsSettingsDialog();
                     else showAboutDialog();
                 })
                 .setNegativeButton("关闭", null)

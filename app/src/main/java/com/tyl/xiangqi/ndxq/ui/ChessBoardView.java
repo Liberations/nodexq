@@ -670,6 +670,11 @@ public class ChessBoardView extends View {
         return XiangqiRules.copyBoard(board);
     }
 
+    /** 最近一步走法；尚未走子或清空后为 null。 */
+    public Move lastMove() {
+        return lastMove;
+    }
+
     public boolean isRedToMove() {
         return redToMove;
     }

@@ -3,6 +3,17 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 语音走棋：离线识别需要采集麦克风音频。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 语音走棋悬浮球：需要“显示在其他应用上层”权限。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
+    </queries>
+
     <application
         android:theme="@style/AppTheme"
         android:label="@string/app_name"
