@@ -78,11 +78,16 @@ final class TtsAnnouncer {
             }
             ready = true;
             failed = false;
+            // 播报完成回调驱动队列前进；必须在引擎可用后立刻注册。
+            try {
+                tts.setOnUtteranceProgressListener(progressListener);
+            } catch (Exception ignored) {
+            }
             applySavedConfiguration();
             // onInit 到来之前已产生的走子播报，在这里补放最新一条。
             String pending = pendingAnnounce;
             pendingAnnounce = null;
-            if (pending != null) speakNow(pending);
+            if (pending != null) enqueueAnnounce(pending);
         });
     }
 
@@ -141,35 +146,34 @@ final class TtsAnnouncer {
     }
 
     /**
-     * 播报一步走法：红/黑方前缀 + 逐字停顿（如“红炮，二，平，五”）。
+     * 播报一步走法，文本为“红炮，二平五”式（棋子后停顿、动作连读）。
      *
-     * <p>isRedMove：刚走的一步是否红方（用于“红炮/黑马”前缀）。
+     * <p>入队策略：播报进队列，不打断正在读的内容；队列只保留最近两条，
+     * 保证积压时最后两条招法仍完整读出（第三条起丢弃最旧的）。
      * 将军不另行 TTS 播报——项目内置 check.wav 走系统音效通道，更即时。</p>
      */
     void announceMove(String moveText, boolean isRedMove) {
         if (tts == null || failed) return;
         String spoken = buildSpokenText(moveText, isRedMove);
+        if (spoken.length() == 0) return;
         if (!ready) {
-            // 引擎连接中：挂起最新一条，onInit 成功后补放。
+            // 引擎连接中：只保留最新一条，onInit 成功后补放。
             pendingAnnounce = spoken;
             return;
         }
-        speakNow(spoken);
+        enqueueAnnounce(spoken);
     }
 
+
     /**
-     * 组装播报文本：前缀“红/黑”+ 把记谱每个字之间插入顿号式逗号，
-     * 让 TTS 在每个字之间产生自然停顿（“红炮，二，平，五”）。
-     * 多字前缀（“前/后/中/数字”+ 棋子）同样逐字停顿。
+     * 组装播报文本：“红/黑”前缀 + 记谱原文，仅在棋子名后加一个逗号停顿，
+     * 动作与数字连读更自然（“红炮，二平五”“黑马，8进7”）。
+     * 记谱首字符即棋子名；带“前/后/中/数字”前缀的多子记谱同样只停顿一次。
      */
     static String buildSpokenText(String notation, boolean isRedMove) {
         if (notation == null || notation.length() == 0) return "";
-        StringBuilder sb = new StringBuilder(notation.length() * 2 + 2);
-        sb.append(isRedMove ? "红" : "黑");
-        for (int i = 0; i < notation.length(); i++) {
-            sb.append('，').append(notation.charAt(i));
-        }
-        return sb.toString();
+        return (isRedMove ? "红" : "黑") + notation.charAt(0)
+                + "，" + notation.substring(1);
     }
 
     /** 系统当前可用的中文语音（已按名称排序）；引擎未就绪时返回空列表。 */
@@ -202,6 +206,10 @@ final class TtsAnnouncer {
         ready = false;
         failed = true;
         pendingAnnounce = null;
+        synchronized (announceQueue) {
+            announceQueue.clear();
+        }
+        speaking = false;
     }
 
     /** 释放引擎并把状态标记为不可用；此后所有播报请求都会被静默跳过。 */
@@ -217,6 +225,10 @@ final class TtsAnnouncer {
         ready = false;
         failed = true;
         pendingAnnounce = null;
+        synchronized (announceQueue) {
+            announceQueue.clear();
+        }
+        speaking = false;
         if (message != null) host.appendLog(message);
     }
 
@@ -256,13 +268,63 @@ final class TtsAnnouncer {
         return null;
     }
 
-    /** 只保留最新一条播报：快速连续走子时打断上一条，避免语音积压。 */
+    /** 播报队列上限：积压时丢弃最旧的，至少保证最后两条招法完整读出。 */
+    private static final int ANNOUNCE_QUEUE_LIMIT = 2;
+    private final java.util.ArrayDeque<String> announceQueue = new java.util.ArrayDeque<>();
+    /** 是否有播报正在朗读（onDone/onError 之间为 true）。 */
+    private volatile boolean speaking;
+    private final android.speech.tts.UtteranceProgressListener progressListener =
+            new android.speech.tts.UtteranceProgressListener() {
+                @Override public void onStart(String utteranceId) {
+                    speaking = true;
+                }
+
+                @Override public void onDone(String utteranceId) {
+                    speaking = false;
+                    pumpQueue();
+                }
+
+                @Deprecated
+                @Override public void onError(String utteranceId) {
+                    speaking = false;
+                    pumpQueue();
+                }
+            };
+
+    /**
+     * 入队一条播报：不打断正在读的内容；队列超过上限时丢最旧的，
+     * 保证最新两条招法总能完整读出。空闲时立即开始读。
+     */
+    private void enqueueAnnounce(String text) {
+        if (text == null || text.length() == 0) return;
+        synchronized (announceQueue) {
+            announceQueue.addLast(text);
+            while (announceQueue.size() > ANNOUNCE_QUEUE_LIMIT) {
+                announceQueue.pollFirst();
+            }
+        }
+        pumpQueue();
+    }
+
+    /** 队列泵：引擎空闲时取出下一条开始朗读；正在读则等待 onDone 回调再继续。 */
+    private void pumpQueue() {
+        if (tts == null || !ready || failed) return;
+        if (speaking) return;
+        String next;
+        synchronized (announceQueue) {
+            next = announceQueue.pollFirst();
+        }
+        if (next == null) return;
+        speakNow(next);
+    }
+
+    /** 从队列取出的内容用 QUEUE_ADD 语义朗读；失败释放引擎。 */
     private void speakNow(String text) {
         if (tts == null || text == null || text.length() == 0) return;
         try {
             utteranceSeq = (utteranceSeq + 1) & 0x7fffffff;
             String utteranceId = "ndxq-tts-" + System.nanoTime() + "-" + utteranceSeq;
-            int status = tts.speak(text, TextToSpeech.QUEUE_FLUSH, new Bundle(), utteranceId);
+            int status = tts.speak(text, TextToSpeech.QUEUE_ADD, new Bundle(), utteranceId);
             // 返回 ERROR 说明本次入队失败（引擎异常断开等）；释放引擎，
             // 避免此后每步走子都对着一个已失效的引擎重复调用。
             if (status == TextToSpeech.ERROR) failEngine(null);

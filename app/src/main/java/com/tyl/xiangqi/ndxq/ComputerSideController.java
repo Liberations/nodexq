@@ -154,6 +154,11 @@ final class ComputerSideController {
         }
     }
 
+    /** 难度切换后强制下次电脑执子时按新槽位/参数重新准备引擎。 */
+    void resetEnginePrepared() {
+        enginePrepared = false;
+    }
+
     private void configureEngine() {
         if (host.manualEngine == null || enginePrepared) return;
         host.manualEngine.setVirtualEngineSlot("131");

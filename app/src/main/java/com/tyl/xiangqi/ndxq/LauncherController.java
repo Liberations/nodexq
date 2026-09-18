@@ -99,6 +99,9 @@ final class LauncherController {
         Button blindfold = launcherButton(activity, "盲棋训练");
         root.addView(blindfold, launcherEntryLp(activity, 50, 10));
         blindfold.setOnClickListener(v -> activity.handleLauncherBlindfoldEntry());
+        Button chessClock = launcherButton(activity, "棋钟");
+        root.addView(chessClock, launcherEntryLp(activity, 50, 10));
+        chessClock.setOnClickListener(v -> activity.showChessClock());
         Button recent = launcherButton(activity, "最近对局");
         root.addView(recent, launcherEntryLp(activity, 50, 10));
         recent.setOnClickListener(v -> activity.showRecentGamesScreen());

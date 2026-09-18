@@ -3,7 +3,6 @@ package com.tyl.xiangqi.ndxq;
 import android.Manifest;
 import android.app.AlertDialog;
 import android.content.pm.PackageManager;
-import android.graphics.PixelFormat;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -11,13 +10,12 @@ import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Build;
-import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -41,7 +39,8 @@ import java.util.List;
  * <p>两种用法：
  * <ul>
  *   <li>菜单点“语音走棋”：弹对话框收音一次（与旧版一致）；</li>
- *   <li>悬浮球模式：常驻小球（TYPE_APPLICATION_OVERLAY），打开后小球自动待命，
+ *   <li>悬浮面板模式：应用内悬浮（加在 appRoot 之上的覆盖 View，无需
+ *       SYSTEM_ALERT_WINDOW 悬浮窗权限），打开后面板自动待命，
  *       每当轮到玩家行棋就自动开始录音，30 秒无有效识别自动停止并回到待命。</li>
  * </ul></p>
  */
@@ -71,13 +70,11 @@ final class VoiceInputController {
     private TextView liveText;
     private volatile OnlineStream liveStream;
 
-    // ===== 悬浮球模式 =====
+    // ===== 悬浮面板模式（应用内悬浮） =====
     private boolean ballEnabled;
-    /** 悬浮球是否被点击暂停：暂停时轮到玩家也不自动收音，再点小球恢复。 */
+    /** 面板是否被点击暂停：暂停时轮到玩家也不自动收音，再点面板恢复。 */
     private volatile boolean ballPaused;
-    private WindowManager windowManager;
     private View ballView;
-    private WindowManager.LayoutParams ballParams;
     private volatile boolean capturing;
     private volatile boolean autoMode;
     private Runnable autoTimeoutRunnable;
@@ -97,22 +94,18 @@ final class VoiceInputController {
         ensureReadyThen(() -> showCaptureDialog());
     }
 
-    /** 悬浮球开关状态（菜单按钮显示用）。 */
+    /** 悬浮面板开关状态（菜单按钮显示用）。 */
     boolean isFloatingBallEnabled() {
         return ballEnabled;
     }
 
-    /** 悬浮球开关：首次开启申请悬浮窗与麦克风权限，之后切换显示/隐藏。 */
+    /** 悬浮面板开关：首次开启申请麦克风权限（应用内悬浮不需要悬浮窗权限）。 */
     void toggleFloatingBall() {
         if (ballEnabled) {
             stopBallSession();
             removeBallView();
             ballEnabled = false;
-            Toast.makeText(host, "语音走棋悬浮球已关闭", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (!Settings.canDrawOverlays(host)) {
-            requestOverlayPermission();
+            Toast.makeText(host, "语音走棋悬浮窗已关闭", Toast.LENGTH_SHORT).show();
             return;
         }
         if (host.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
@@ -125,36 +118,12 @@ final class VoiceInputController {
         enableFloatingBall();
     }
 
-    private void requestOverlayPermission() {
-        try {
-            Toast.makeText(host, "请授予“显示在其他应用上层”权限后重试", Toast.LENGTH_LONG).show();
-            host.startActivity(new android.content.Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    android.net.Uri.parse("package:" + host.getPackageName())));
-        } catch (Exception e) {
-            Toast.makeText(host, "无法打开悬浮窗权限设置：" + e.getMessage(), Toast.LENGTH_LONG).show();
-        }
-    }
-
-    /** 悬浮窗权限返回后由 Activity 调用：若用户刚开启过悬浮球则继续。 */
-    void onResumeAfterSettings() {
-        if (!ballEnabled && autoMode && Settings.canDrawOverlays(host)
-                && host.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED) {
-            autoMode = false;
-            enableFloatingBall();
-        }
-    }
-
     void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode != REQ_RECORD_AUDIO) return;
         if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             if (autoMode) {
-                if (Settings.canDrawOverlays(host)) {
-                    autoMode = false;
-                    enableFloatingBall();
-                }
-                // 还差悬浮窗权限：留在 autoMode，设置页返回后 onResumeAfterSettings 继续。
+                autoMode = false;
+                enableFloatingBall();
                 return;
             }
             ensureReadyThen(this::showCaptureDialog);
@@ -168,12 +137,13 @@ final class VoiceInputController {
         ballEnabled = true;
         ballPaused = false;
         showBallView();
+        if (!ballEnabled) return; // 面板创建失败时已复位
         ensureReadyThen(() -> {
             if (ballEnabled) updateBallState(BALL_IDLE_COLOR, "待");
             // 常开式：面板一出现就把麦克风与背景循环拉起来，
             // 之后只做抑制/收音状态切换，不再反复开关 AudioRecord。
             startAmbientLoop();
-            Toast.makeText(host, "语音走棋悬浮球已开启：轮到你走棋时自动收音", Toast.LENGTH_LONG).show();
+            Toast.makeText(host, "语音走棋悬浮窗已开启：轮到你走棋时自动收音", Toast.LENGTH_LONG).show();
         });
     }
 
@@ -219,7 +189,7 @@ final class VoiceInputController {
 
     // ==================== 悬浮面板视图 ====================
     //
-    // 面板结构（圆角深色卡片）：
+    // 面板结构（圆角深色卡片，加在 appRoot 之上的应用内悬浮层）：
     //   第一行：状态字（待/候/录/停/载）+ 动态声波条（12 根柱子随状态起伏）
     //   第二行：实时识别文字（suppressCapture 时显示“对方行棋中…”）
 
@@ -231,10 +201,15 @@ final class VoiceInputController {
     private TextView ballText;
     private WaveBarsView waveView;
     private TextView recognizedText;
+    /** 记录面板在被移除前挂靠的父容器，便于 showBallView 重挂。 */
+    private ViewGroup ballHost;
 
     private void showBallView() {
         if (panelView != null) return;
-        windowManager = (WindowManager) host.getSystemService(android.content.Context.WINDOW_SERVICE);
+        if (host.appRoot == null) {
+            ballEnabled = false;
+            return;
+        }
 
         LinearLayout panel = new LinearLayout(host);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -302,15 +277,12 @@ final class VoiceInputController {
         recognizedText = recognized;
         ballView = panel;
 
-        ballParams = new WindowManager.LayoutParams(
-                host.dp(PANEL_WIDTH_DP), WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                PixelFormat.TRANSLUCENT);
-        ballParams.gravity = Gravity.TOP | Gravity.START;
-        ballParams.x = host.dp(8);
-        ballParams.y = host.dp(320);
+        // 应用内悬浮：加在 appRoot 顶层，占位小、不遮按键，可拖动。
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
+                host.dp(PANEL_WIDTH_DP), ViewGroup.LayoutParams.WRAP_CONTENT);
+        panelLp.gravity = Gravity.TOP | Gravity.START;
+        panelLp.leftMargin = host.dp(8);
+        panelLp.topMargin = host.dp(320);
 
         final int[] downPos = new int[2];
         final boolean[] dragged = new boolean[]{false};
@@ -326,14 +298,11 @@ final class VoiceInputController {
                     int dy = (int) event.getRawY() - downPos[1];
                     if (Math.abs(dx) > host.dp(6) || Math.abs(dy) > host.dp(6)) {
                         dragged[0] = true;
-                        ballParams.x += dx;
-                        ballParams.y += dy;
+                        panelLp.leftMargin += dx;
+                        panelLp.topMargin += dy;
                         downPos[0] = (int) event.getRawX();
                         downPos[1] = (int) event.getRawY();
-                        try {
-                            windowManager.updateViewLayout(ballView, ballParams);
-                        } catch (Exception ignored) {
-                        }
+                        panel.setLayoutParams(panelLp);
                     }
                     return true;
                 }
@@ -345,7 +314,8 @@ final class VoiceInputController {
             }
         });
         try {
-            windowManager.addView(panelView, ballParams);
+            ballHost = host.appRoot;
+            ballHost.addView(panelView, panelLp);
         } catch (Exception e) {
             panelView = null;
             ballView = null;
@@ -382,13 +352,18 @@ final class VoiceInputController {
     }
 
     private void removeBallView() {
-        if (panelView == null || windowManager == null) return;
+        if (panelView == null) return;
         panelView.animate().cancel();
         if (waveView != null) waveView.stopTicker();
-        try {
-            windowManager.removeView(panelView);
-        } catch (Exception ignored) {
+        ViewGroup parent = ballHost != null ? ballHost
+                : (panelView.getParent() instanceof ViewGroup ? (ViewGroup) panelView.getParent() : null);
+        if (parent != null) {
+            try {
+                parent.removeView(panelView);
+            } catch (Exception ignored) {
+            }
         }
+        ballHost = null;
         panelView = null;
         ballView = null;
         ballText = null;
@@ -396,10 +371,10 @@ final class VoiceInputController {
         recognizedText = null;
     }
 
-    /**
-     * 动态声波条：N 根圆角柱，用 handler 周期刷新高度模拟声波。
-     * 独立 View，避免 overlay 面板整体重绘。
-     */
+        /**
+         * 动态声波条：N 根圆角柱，用 handler 周期刷新高度模拟声波。
+         * 独立 View，避免面板整体重绘。
+         */
     private static final class WaveBarsView extends View {
         static final int MODE_IDLE = 0;
         static final int MODE_WAITING = 1;
@@ -475,7 +450,7 @@ final class VoiceInputController {
         }
     }
 
-    /** Activity 返回/离开棋盘页时调用：彻底停止常开录音，保留悬浮球与引擎。 */
+    /** Activity 返回/离开棋盘页时调用：彻底停止常开录音，保留悬浮窗与引擎。 */
     void pauseBallSession() {
         if (!ballEnabled) return;
         stopCaptureInternal();

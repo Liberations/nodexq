@@ -194,12 +194,12 @@ public class ChessBoardView extends View {
     private int selectedRow = -1;
     private int selectedCol = -1;
     private Move lastMove;
-    /** 盲棋训练渲染模式：棋子的可见程度（双方将帅始终正常显示）。 */
+    /** 盲棋训练渲染模式：棋子的可见程度（隐藏/轮廓/显示，作用于全部棋子）。 */
     public static final int PIECE_DISPLAY_HIDDEN = 0;
     public static final int PIECE_DISPLAY_OUTLINE = 1;
     public static final int PIECE_DISPLAY_VISIBLE = 2;
     private int pieceDisplayMode = PIECE_DISPLAY_VISIBLE;
-    /** 轮廓模式用图：当前皮肤目录下的 empty_chess（外置可覆盖），缺失时回退内置资源。 */
+    /** 轮廓模式用图：当前皮肤目录下的 empty（外置可覆盖 empty.png/webp/jpg），缺失时回退内置资源。 */
     private Bitmap outlineBitmap;
     private Listener listener;
 
@@ -420,8 +420,8 @@ public class ChessBoardView extends View {
             signature = signature * 31L + file.length();
             signature = signature * 31L + file.lastModified();
         }
-        // empty_chess 是可选覆盖：存在与否也纳入签名，保证增删后缓存正确失效。
-        File empty = findSkinBitmapFile(dir, "empty_chess");
+        // empty 是可选覆盖：存在与否也纳入签名，保证增删后缓存正确失效。
+        File empty = findSkinBitmapFile(dir, "empty");
         if (empty != null) {
             signature = signature * 31L + empty.length();
             signature = signature * 31L + empty.lastModified();
@@ -430,13 +430,13 @@ public class ChessBoardView extends View {
     }
 
     /**
-     * 解析皮肤轮廓图 empty_chess：外置皮肤目录可提供覆盖版本；
-     * 未提供时回退到 APK 内置 empty_chess 资源。返回 null 表示内置资源也不可用。
+     * 解析皮肤轮廓图 empty：外置皮肤目录可提供 empty.png/webp/jpg 覆盖；
+     * 未提供时回退到 APK 内置 empty 资源。返回 null 表示内置资源也不可用。
      */
     public static Bitmap resolveOutlineBitmap(Context context, File skinDir) {
-        Bitmap fromSkin = skinDir == null ? null : decodeSkinBitmap(skinDir, "empty_chess");
+        Bitmap fromSkin = skinDir == null ? null : decodeSkinBitmap(skinDir, "empty");
         if (fromSkin != null) return fromSkin;
-        return BitmapFactory.decodeResource(context.getResources(), R.drawable.empty_chess);
+        return BitmapFactory.decodeResource(context.getResources(), R.drawable.empty);
     }
 
     private static File findSkinBitmapFile(File dir, String baseName) {
@@ -1193,10 +1193,9 @@ public class ChessBoardView extends View {
             for (int c = 0; c < 9; c++) {
                 char p = board[r][c];
                 if (!XiangqiRules.isPiece(p)) continue;
-                boolean king = p == 'K' || p == 'k';
-                // 盲棋模式：将帅始终正常显示；其余棋子按三态渲染。
+                // 盲棋模式：所有棋子按三态渲染（将帅不再特殊，同样隐藏/轮廓）。
                 Bitmap bm;
-                if (king || pieceDisplayMode == PIECE_DISPLAY_VISIBLE) {
+                if (pieceDisplayMode == PIECE_DISPLAY_VISIBLE) {
                     bm = pieceBitmapMap.get(p);
                 } else if (pieceDisplayMode == PIECE_DISPLAY_OUTLINE) {
                     bm = outlineBitmap;
@@ -1214,8 +1213,8 @@ public class ChessBoardView extends View {
     }
 
     /**
-     * 盲棋训练渲染模式：HIDDEN 完全隐藏（将帅除外）、OUTLINE 用 empty_chess
-     * 轮廓图替换全部非将帅棋子、VISIBLE 正常显示。详见 drawPieces。
+     * 盲棋训练渲染模式：HIDDEN 全部棋子完全不可见（将帅同样隐藏）、
+     * OUTLINE 用 empty 轮廓图替换全部棋子、VISIBLE 正常显示。详见 drawPieces。
      */
     public void setPieceDisplayMode(int mode) {
         int normalized = mode < PIECE_DISPLAY_HIDDEN ? PIECE_DISPLAY_VISIBLE
@@ -1229,7 +1228,7 @@ public class ChessBoardView extends View {
         return pieceDisplayMode;
     }
 
-    /** 更新轮廓模式用图（外置皮肤的 empty_chess，或内置默认图）。 */
+    /** 更新轮廓模式用图（外置皮肤的 empty，或内置默认图）。 */
     public void setOutlineBitmap(Bitmap bitmap) {
         outlineBitmap = bitmap;
         if (pieceDisplayMode == PIECE_DISPLAY_OUTLINE) invalidate();

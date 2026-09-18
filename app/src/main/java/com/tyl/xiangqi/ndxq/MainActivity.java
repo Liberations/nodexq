@@ -316,7 +316,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     boolean showPlayerRating = true;
     /** 评测模式与自选难度共用棋盘流程，但等级分资格和页面能力独立。 */
     boolean evaluationMode;
-    /** 盲棋训练：棋盘只显示双方将帅，其余棋子隐藏；底部开关可临时显示。 */
+    /** 盲棋训练：棋子默认完全隐藏；底部三态按钮可切轮廓/显示。 */
     boolean blindfoldMode;
     private int evaluationDifficultyIndex;
     private boolean evaluationEnginePlaysRed;
@@ -421,6 +421,12 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
             new SkinRuntimeController(this);
     final TtsAnnouncer ttsAnnouncer = new TtsAnnouncer(this);
     final BlindfoldPlaybackController blindfoldPlayback = new BlindfoldPlaybackController(this);
+    private final ChessClockController chessClockController = new ChessClockController(this);
+
+    /** 首页棋钟入口：进入独立计时页面。 */
+    void showChessClock() {
+        chessClockController.showClockScreen();
+    }
     final VoiceInputController voiceInputController = new VoiceInputController(this);
     private final SituationScoreController situationScoreController =
             new SituationScoreController(this);
@@ -605,7 +611,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         } catch (Exception ignored) {}
     }
 
-    private void applySystemBarInsets(final View root) {
+    void applySystemBarInsets(final View root) {
         if (root == null || Build.VERSION.SDK_INT < 21) return;
         root.setFitsSystemWindows(true);
         root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -1047,19 +1053,19 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     }
 
     /**
-     * 盲棋训练：与分析模式同一局面流程，但棋盘默认只显示双方将帅，
-     * 其余棋子隐藏；棋盘页底部“显示棋子”开关可在忘记时临时查看。
+     * 盲棋训练：与分析模式同一局面流程，棋子默认完全隐藏（将帅同样隐藏），
+     * 棋盘页底部三态按钮可在 隐藏/轮廓/显示 间切换。
      */
     void handleLauncherBlindfoldEntry() {
         blindfoldMode = true;
-        // 盲棋训练默认开启语音播报与语音走棋悬浮球：看不见棋子时靠听记谱维持局面。
+        // 盲棋训练默认开启语音播报与语音走棋悬浮窗：看不见棋子时靠听记谱维持局面。
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putBoolean(TtsAnnouncer.PREF_ENABLED, true).apply();
         ttsAnnouncer.onPrefsChanged();
         SavedSession saved = readSavedSession(true);
         if (saved != null) resumeSavedSession(saved);
         else startSelfAnalysisSession();
-        // 棋盘页构建完成后开启悬浮球（涉及悬浮窗权限时由其内部引导授权）。
+        // 棋盘页构建完成后开启语音悬浮窗（应用内悬浮，仅需麦克风权限时由其内部引导授权）。
         handler.post(() -> {
             if (gameScreenVisible && !voiceInputController.isFloatingBallEnabled()) {
                 voiceInputController.toggleFloatingBall();
@@ -1087,8 +1093,20 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     void applyBlindfoldDifficulty(int index) {
         selectedDifficultyIndex = clamp(index, 0, DIFFICULTIES.length - 1);
         difficultyPreferences.saveCustomSelection(selectedDifficultyIndex, enginePlaysRed);
+        // ① 对弈引擎（正式对弈模式）按档位重配。
         configureGameEngine();
+        // ② 盲棋属于分析模式：电脑执子走 ComputerSideController，用
+        //    manualEngine + manualPlayLimit，并不读 DifficultyProfile。
+        //    因此必须把档位的槽位/线程/搜索限制同步到这条真实链路。
+        DifficultyProfile p = currentDifficulty();
+        manualEngine.setVirtualEngineSlot(p.engineSlot);
+        manualEngine.clearSessionOptions();
+        manualEngine.setSessionOption("Threads", String.valueOf(p.threads));
+        manualPlayLimit = p.limit;
+        computerSideController.resetEnginePrepared();
         saveLauncherPreferences();
+        appendLog("盲棋难度：" + currentDifficultyDisplayName()
+                + "（" + p.engineSlot + "，" + p.limit.goCommand() + "）。\n");
     }
 
     static int difficultyCount() {
@@ -2061,7 +2079,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
                 && !computerSideThinking);
         boardView.setInputEnabled(enabled);
         if (enabled && !lastHumanTurnSignal) {
-            // 从“不可走”翻到“可走”的瞬间即轮到玩家：通知语音悬浮球开始收音。
+            // 从“不可走”翻到“可走”的瞬间即轮到玩家：通知语音悬浮窗开始收音。
             voiceInputController.notifyHumanTurn();
         } else if (!enabled && lastHumanTurnSignal) {
             // 玩家走完/电脑开始思考：抑制收音，防止落子音效与语音播报串进识别。
@@ -3913,7 +3931,6 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     @Override
     protected void onResume() {
         super.onResume();
-        voiceInputController.onResumeAfterSettings();
         boolean ready = ensureNodeStorageReady(false);
         if (ready) requestGlobalBackgroundRefresh();
         if (ready && gameScreenVisible && boardView != null) applyCurrentSkinToBoard(boardView, false);

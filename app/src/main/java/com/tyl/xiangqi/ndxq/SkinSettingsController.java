@@ -61,7 +61,7 @@ final class SkinSettingsController {
         scroll.addView(panel);
 
         TextView skinExplain = new TextView(activity);
-        skinExplain.setText("default 为内置皮肤。新增皮肤请放到 /storage/emulated/0/nodexq/pic/<皮肤名>/，棋盘文件名为 board，棋子图片使用 br、bn、bb、ba、bk、bc、bp、rr、rn、rb、ra、rk、rc、rp，支持 PNG、WEBP、JPG；可选 back 图片作为全局背景。");
+        skinExplain.setText("default 为内置皮肤。新增皮肤请放到 /storage/emulated/0/nodexq/pic/<皮肤名>/，棋盘文件名为 board，棋子图片使用 br、bn、bb、ba、bk、bc、bp、rr、rn、rb、ra、rk、rc、rp（兼容 w 前缀红方 wr…wp、大小写不敏感），支持 PNG、WEBP、JPG；可选 back 图片作为全局背景；可选 empty 图片（empty.png 等）作为盲棋训练的棋子轮廓图，未提供时使用内置轮廓。");
         skinExplain.setTextSize(10);
         skinExplain.setTextColor(Color.rgb(105, 110, 106));
         skinExplain.setPadding(0, 0, 0, activity.dp(5));

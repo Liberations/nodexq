@@ -58,10 +58,12 @@ final class GameScreenController {
         host.applyCurrentSkinToBoard(host.boardView, false);
         host.boardView.setListener(host);
         if (host.blindfoldMode) {
-            // 盲棋默认“隐藏”态；轮廓图 empty_chess 支持外置皮肤覆盖。
-            host.boardView.setOutlineBitmap(ChessBoardView.resolveOutlineBitmap(host,
+            // 盲棋轮廓图优先读当前外置皮肤目录的 empty.png|webp|jpg；
+            // 外置皮肤没有（含内置 default 皮肤）时回退内置 empty 资源。
+            android.graphics.Bitmap outline = ChessBoardView.resolveOutlineBitmap(host,
                     host.storageManager().skinDirectory(
-                            host.sanitizeSkinName(host.currentSkinName))));
+                            host.sanitizeSkinName(host.currentSkinName)));
+            host.boardView.setOutlineBitmap(outline);
             host.boardView.setPieceDisplayMode(ChessBoardView.PIECE_DISPLAY_HIDDEN);
         }
         host.boardView.setOnLongClickListener(v -> {
@@ -83,11 +85,10 @@ final class GameScreenController {
                 ViewGroup.LayoutParams.MATCH_PARENT, host.dp(MainActivity.PLAYER_ROW_HEIGHT_DP)));
         host.editModeBottomLabel = host.bottomPlayerLabel;
 
-        // 盲棋训练：底部三态开关 隐藏→轮廓→显示 循环切换。
+        // 盲棋训练：底部一行三个等宽按钮——显示三态 / 人机难度 / 读谱。
         if (host.blindfoldMode) {
-            Button blindToggle = buildBlindfoldToggle();
-            root.addView(blindToggle, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, host.dp(38)));
+            root.addView(buildBlindfoldRow(), new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, host.dp(40)));
         }
 
         LinearLayout tabs = new LinearLayout(host);
@@ -275,20 +276,42 @@ final class GameScreenController {
     }
 
     /**
-     * 盲棋训练底部开关：点击在 隐藏 → 轮廓 → 显示 三态间循环。
-     * 隐藏 = 非将帅棋子完全不可见；轮廓 = 用 empty_chess 轮廓图替换
-     * （外置皮肤可提供 empty_chess.png 覆盖，缺失回退内置）；显示 = 正常皮肤。
+     * 盲棋训练底部一行：三个等宽按钮——显示三态 / 人机难度 / 读谱。
+     * 隐藏 = 全部棋子完全不可见（将帅同样隐藏）；轮廓 = 用 empty 轮廓图替换
+     * （外置皮肤可提供 empty.png/webp/jpg 覆盖，缺失回退内置）；显示 = 正常皮肤。
      */
-    private Button buildBlindfoldToggle() {
-        Button toggle = host.compactButton(blindToggleLabel(
+    private LinearLayout buildBlindfoldRow() {
+        LinearLayout row = new LinearLayout(host);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(host.dp(8), host.dp(2), host.dp(8), host.dp(2));
+
+        Button displayBtn = host.compactButton(blindToggleLabel(
                 host.boardView.getPieceDisplayMode()));
-        toggle.setTextSize(12);
-        toggle.setOnClickListener(v -> {
+        displayBtn.setTextSize(12);
+        displayBtn.setOnClickListener(v -> {
             int next = (host.boardView.getPieceDisplayMode() + 1) % 3;
             host.boardView.setPieceDisplayMode(next);
-            toggle.setText(blindToggleLabel(next));
+            displayBtn.setText(blindToggleLabel(next));
         });
-        return toggle;
+        Button difficultyBtn = host.compactButton(host.difficultyDisplayName(host.selectedDifficultyIndex));
+        difficultyBtn.setTextSize(12);
+        difficultyBtn.setOnClickListener(v -> host.showBlindfoldDifficultyPicker());
+        Button playbackBtn = host.compactButton("播放棋谱");
+        playbackBtn.setTextSize(12);
+        playbackBtn.setOnClickListener(v -> host.blindfoldPlayback.onButtonClicked());
+        host.blindfoldPlayback.bindButton(playbackBtn);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        lp.rightMargin = host.dp(6);
+        row.addView(displayBtn, lp);
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        lp2.rightMargin = host.dp(6);
+        row.addView(difficultyBtn, lp2);
+        row.addView(playbackBtn, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        return row;
     }
 
     private static String blindToggleLabel(int mode) {

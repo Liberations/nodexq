@@ -128,7 +128,7 @@ final class GameActionMenuController {
         rows[5].addView(soundBtn, menuActionLp());
         Button voiceBtn = menuActionButton("语音走棋", host.voiceInputController::startVoiceMove, dialog);
         Button ballBtn = menuActionButton(host.voiceInputController.isFloatingBallEnabled()
-                ? "悬浮球:开" : "悬浮球:关", host.voiceInputController::toggleFloatingBall, dialog);
+                ? "语音悬浮窗:开" : "语音悬浮窗:关", host.voiceInputController::toggleFloatingBall, dialog);
         rows[6].addView(combinedBtn, menuActionLp());
         rows[6].addView(voiceBtn, menuActionLp());
         if (host.selfAnalysisMode) {
