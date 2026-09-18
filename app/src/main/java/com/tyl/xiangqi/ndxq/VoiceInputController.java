@@ -27,6 +27,7 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OnlineStream;
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig;
 import com.k2fsa.sherpa.onnx.OnlineModelConfig;
+import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig;
 import com.tyl.xiangqi.ndxq.core.ChineseNotation;
 import com.tyl.xiangqi.ndxq.core.Move;
 import com.tyl.xiangqi.ndxq.core.VoiceMoveMatcher;
@@ -64,6 +65,8 @@ final class VoiceInputController {
     private final MainActivity host;
     private OnlineRecognizer recognizer;
     private volatile boolean recognizerReady;
+    /** 加载失败置位：禁止后续任何录音启动，直到用户补齐模型重试。 */
+    private volatile boolean recognizerFailed;
     private volatile boolean recognizerLoading;
     private AudioRecord audioRecord;
     private Thread recogThread;
@@ -98,6 +101,20 @@ final class VoiceInputController {
     /** 悬浮面板开关状态（菜单按钮显示用）。 */
     boolean isFloatingBallEnabled() {
         return ballEnabled;
+    }
+
+    /**
+     * 模型是否可用（外置目录或 APK 内置至少一套齐全）。
+     * 盲棋入口等“自动开启悬浮窗”的场景先查这个，模型缺失时直接不开面板，
+     * 只弹一次引导（受“不再提示”控制），避免留下无引擎的死面板。
+     */
+    boolean isModelAvailable() {
+        if (recognizerReady) return true;
+        java.io.File externalDir = new java.io.File(
+                host.storageManager().rootDirectory(), "asr");
+        return isExternalModelDirUsable(externalDir)
+                || (isAssetFilePresent("asr/model.int8.onnx")
+                && isAssetFilePresent("asr/tokens.txt"));
     }
 
     /** 悬浮面板开关：首次开启申请麦克风权限（应用内悬浮不需要悬浮窗权限）。 */
@@ -140,6 +157,9 @@ final class VoiceInputController {
         showBallView();
         if (!ballEnabled) return; // 面板创建失败时已复位
         ensureReadyThen(() -> {
+            // 模型加载失败时 ready 回调不会执行，这里不会打开麦克风；
+            // 兜底再查一次，防止竞态下在无引擎状态启动录音。
+            if (!recognizerReady) return;
             if (ballEnabled) updateBallState(BALL_IDLE_COLOR, "待");
             // 常开式：面板一出现就把麦克风与背景循环拉起来，
             // 之后只做抑制/收音状态切换，不再反复开关 AudioRecord。
@@ -153,23 +173,58 @@ final class VoiceInputController {
             onReady.run();
             return;
         }
+        // 上次加载失败：不再空转重试；用户勾选“不再提示”后保持静默。
+        if (recognizerFailed) {
+            if (!suppressMissingPrompt()) showModelMissingDialog(null);
+            return;
+        }
         if (recognizerLoading) return;
+        // ★ 关键预检：sherpa-onnx 的 ReadBinaryFile 找不到模型时直接
+        //   SHERPA_ONNX_LOGE + exit(-1)，进程以 status=255 自杀（闪退），
+        //   Java 层根本收不到异常。因此必须先在 Java 侧确认"至少有一套
+        //   完整模型可用"才允许调用 new OnlineRecognizer；否则视为加载
+        //   失败，走弹窗引导，绝不触碰 native 加载。
+        java.io.File externalDir = new java.io.File(
+                host.storageManager().rootDirectory(), "asr");
+        boolean useExternal = isExternalModelDirUsable(externalDir);
+        boolean internalCtcAvailable = isAssetFilePresent("asr/model.int8.onnx")
+                && isAssetFilePresent("asr/tokens.txt");
+        if (!useExternal && !internalCtcAvailable) {
+            recognizerFailed = true;
+            if (!suppressMissingPrompt()) showModelMissingDialog(null);
+            return;
+        }
         recognizerLoading = true;
         if (ballEnabled) updateBallState(BALL_LOADING_COLOR, "载");
         Toast.makeText(host, "语音引擎加载中…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             try {
+                // 模型目录：优先外置 /storage/emulated/0/nodexq/asr/（可自行更换
+                // 更强的模型、不占 APK 体积）；目录不存在或缺文件时回退 APK 内置
+                // assets/asr/（当前内置为空，等于强制外置，assets 布局保留兼容）。
+                boolean ext = useExternal;
+                String dir = ext ? externalDir.getAbsolutePath() + "/" : MODEL_DIR;
+
                 OnlineModelConfig modelConfig = new OnlineModelConfig();
-                // 2025-06-30 中文流式 zipformer-xlarge transducer（多中文集合并训练，
-                // 约 6 亿参数 int8）：encoder/decoder/joiner 三件套，精度显著优于
-                // 旧 zipformer-small-ctc。建模单元为字级+byte fallback，
-                // 棋子/数字词汇完整覆盖，无需 BPE 词表。
-                OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
-                transducer.setEncoder(MODEL_DIR + "encoder.int8.onnx");
-                transducer.setDecoder(MODEL_DIR + "decoder.onnx");
-                transducer.setJoiner(MODEL_DIR + "joiner.int8.onnx");
-                modelConfig.setTransducer(transducer);
-                modelConfig.setTokens(MODEL_DIR + "tokens.txt");
+                String dirPrefix = dir;
+                if (ext && new java.io.File(externalDir, "encoder.int8.onnx").isFile()) {
+                    // 流式 transducer 三件套（如 2025-06-30 zh-xlarge int8）。
+                    OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
+                    transducer.setEncoder(dirPrefix + "encoder.int8.onnx");
+                    transducer.setDecoder(dirPrefix + "decoder.onnx");
+                    transducer.setJoiner(dirPrefix + "joiner.int8.onnx");
+                    modelConfig.setTransducer(transducer);
+                } else {
+                    // 单文件 zipformer2-ctc（旧内置布局 model.int8.onnx）。
+                    modelConfig.setZipformer2Ctc(new OnlineZipformer2CtcModelConfig(
+                            dirPrefix + "model.int8.onnx"));
+                }
+                modelConfig.setTokens(dirPrefix + "tokens.txt");
+                // tokens 为字级+byte fallback 时 BPE 词表可选；有 bbpe.model 就传入。
+                java.io.File bpe = new java.io.File(externalDir, "bbpe.model");
+                if (ext && bpe.isFile()) {
+                    modelConfig.setBpeVocab(dirPrefix + "bbpe.model");
+                }
                 modelConfig.setNumThreads(4);
                 modelConfig.setProvider("cpu");
                 OnlineRecognizerConfig config = new OnlineRecognizerConfig();
@@ -177,21 +232,107 @@ final class VoiceInputController {
                 config.setFeatConfig(new FeatureConfig());
                 config.setDecodingMethod("greedy_search");
                 config.setEnableEndpoint(true);
-                recognizer = new OnlineRecognizer(host.getAssets(), config);
+                // assetManager 传 null 时 sherpa-onnx 走文件路径加载（newFromFile），
+                // 外置目录才能生效；内置 assets 布局仍需真实 AssetManager。
+                recognizer = new OnlineRecognizer(ext ? null : host.getAssets(), config);
                 recognizerReady = true;
-                host.appendLog("离线语音识别引擎加载完成。\n");
+                host.appendLog("离线语音识别引擎加载完成（"
+                        + (ext ? "外置 " + externalDir.getAbsolutePath() : "APK 内置")
+                        + "）。\n");
                 host.handler.post(() -> {
                     recognizerLoading = false;
                     onReady.run();
                 });
             } catch (Throwable e) {
                 recognizerLoading = false;
+                recognizerFailed = true;
+                // 模型不可用时关闭刚打开的面板，避免面板停在无引擎状态。
+                if (ballEnabled) {
+                    ballEnabled = false;
+                    removeBallView();
+                }
                 host.appendLog("语音识别引擎加载失败：" + e.getMessage() + "\n");
-                host.handler.post(() -> Toast.makeText(host,
-                        "语音引擎加载失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+                host.handler.post(() -> showModelMissingDialog(e.getMessage()));
             }
         }, "sherpa-init").start();
     }
+
+    /**
+     * 模型缺失/加载失败提示：说明外置模型放置路径与所需文件名，
+     * 用户按说明把模型文件放进 /nodexq/asr/ 后重新打开语音即可。
+     * 勾选“不再提示”后静默（用户主动点菜单入口时仍允许重试）。
+     */
+    private void showModelMissingDialog(String error) {
+        SharedPreferences sp = prefs();
+        if (sp.getBoolean(PREF_SUPPRESS_MISSING, false)) return;
+        String message = "未找到语音识别模型或模型加载失败：" + (error == null ? "" : error)
+                + "\n\n请把模型文件放到（用文件管理器或电脑拷贝）："
+                + "\n/storage/emulated/0/nodexq/asr/"
+                + "\n\n二选一："
+                + "\n① 流式 transducer（推荐，如 sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30）："
+                + "\n    encoder.int8.onnx、decoder.onnx、joiner.int8.onnx、tokens.txt"
+                + "\n② 单文件 CTC（旧内置布局）："
+                + "\n    model.int8.onnx、tokens.txt"
+                + "\n\n可选 bbpe.model 一并放入。放好后重新开启语音走棋即可。";
+        new AlertDialog.Builder(host)
+                .setTitle("语音模型未就绪")
+                .setMessage(message)
+                .setPositiveButton("知道了", null)
+                .setNeutralButton("不再提示", (d, which) ->
+                        sp.edit().putBoolean(PREF_SUPPRESS_MISSING, true).apply())
+                .show();
+    }
+
+    /** 用户是否选择过“不再提示”。 */
+    private boolean suppressMissingPrompt() {
+        return prefs().getBoolean(PREF_SUPPRESS_MISSING, false);
+    }
+
+    /** 盲棋等自动开启场景调用：模型缺失且未静默时弹一次引导，不开启面板。 */
+    void notifyModelMissingIfNeeded() {
+        recognizerFailed = true;
+        if (!suppressMissingPrompt()) showModelMissingDialog(null);
+    }
+
+    /** 模型未就绪提示的静默开关键。 */
+    private static final String PREF_SUPPRESS_MISSING = "voice_asr_missing_suppressed";
+
+    private SharedPreferences prefs() {
+        return host.getSharedPreferences(MainActivity.PREFS, android.content.Context.MODE_PRIVATE);
+    }
+
+    /** 外置模型目录可用判定：transducer 三件套或单文件 ctc 至少一套齐全。 */
+    private static boolean isExternalModelDirUsable(java.io.File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        boolean transducer = new java.io.File(dir, "encoder.int8.onnx").isFile()
+                && new java.io.File(dir, "decoder.onnx").isFile()
+                && new java.io.File(dir, "joiner.int8.onnx").isFile();
+        boolean ctc = new java.io.File(dir, "model.int8.onnx").isFile();
+        return (transducer || ctc) && new java.io.File(dir, "tokens.txt").isFile();
+    }
+
+    /** APK 内置 assets 中是否存在指定文件（列目录匹配，不读内容）。 */
+    private boolean isAssetFilePresent(String assetPath) {
+        try {
+            String dir = assetPath.substring(0, assetPath.lastIndexOf('/') + 1);
+            String name = assetPath.substring(assetPath.lastIndexOf('/') + 1);
+            String[] list = ASSET_LIST_CACHE.get(dir);
+            if (list == null) {
+                list = host.getAssets().list(dir);
+                ASSET_LIST_CACHE.put(dir, list);
+            }
+            if (list == null) return false;
+            for (String item : list) {
+                if (name.equals(item)) return true;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static final java.util.HashMap<String, String[]> ASSET_LIST_CACHE =
+            new java.util.HashMap<>();
 
     // ==================== 悬浮面板视图 ====================
     //
@@ -948,5 +1089,6 @@ final class VoiceInputController {
             recognizer = null;
         }
         recognizerReady = false;
+        recognizerFailed = false;
     }
 }

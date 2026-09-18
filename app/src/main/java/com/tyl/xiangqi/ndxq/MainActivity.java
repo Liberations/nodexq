@@ -1065,11 +1065,15 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         SavedSession saved = readSavedSession(true);
         if (saved != null) resumeSavedSession(saved);
         else startSelfAnalysisSession();
-        // 棋盘页构建完成后开启语音悬浮窗（应用内悬浮，仅需麦克风权限时由其内部引导授权）。
+        // 棋盘页构建完成后开启语音悬浮窗：模型未就绪时不自动开启，
+        // 只提示一次放置路径（受“不再提示”控制），避免留下无引擎的面板。
         handler.post(() -> {
-            if (gameScreenVisible && !voiceInputController.isFloatingBallEnabled()) {
-                voiceInputController.toggleFloatingBall();
+            if (!gameScreenVisible || voiceInputController.isFloatingBallEnabled()) return;
+            if (!voiceInputController.isModelAvailable()) {
+                voiceInputController.notifyModelMissingIfNeeded();
+                return;
             }
+            voiceInputController.toggleFloatingBall();
         });
     }
 
