@@ -382,7 +382,11 @@ final class SettingsController {
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
         infoBox.addView(aboutInfoRow("QQ交流群：511645431"),
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
-
+        infoBox.addView(aboutInfoRow("魔改：Liberation"),
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
+        infoBox.addView(aboutLinkRow("开源地址：https://github.com/Liberations/nodexq",
+                "https://github.com/Liberations/nodexq"),
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
         TextView thanks = aboutParagraph(
                 "感谢Qsll项目以及Pikafish、Duffish、PikafishHCE、Tchess这几个开源项目，为本项目提供了重要的参考和帮助。");
         LinearLayout.LayoutParams thanksLp = new LinearLayout.LayoutParams(
@@ -430,6 +434,27 @@ final class SettingsController {
         row.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         row.setTextColor(Color.rgb(35, 55, 47));
         row.setGravity(Gravity.CENTER_VERTICAL);
+        return row;
+    }
+
+    /** 可点击跳转浏览器的信息行（用于开源地址等外链）。 */
+    private View aboutLinkRow(String text, String url) {
+        TextView row = new TextView(host);
+        row.setText(text);
+        row.setTextSize(14);
+        row.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        row.setTextColor(Color.rgb(40, 100, 214));
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPaintFlags(row.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
+        row.setOnClickListener(v -> {
+            try {
+                host.startActivity(new android.content.Intent(
+                        android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+            } catch (Exception e) {
+                android.widget.Toast.makeText(host, "无法打开浏览器：" + e.getMessage(),
+                        android.widget.Toast.LENGTH_SHORT).show();
+            }
+        });
         return row;
     }
 

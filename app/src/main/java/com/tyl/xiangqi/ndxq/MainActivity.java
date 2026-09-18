@@ -316,6 +316,8 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     boolean showPlayerRating = true;
     /** 评测模式与自选难度共用棋盘流程，但等级分资格和页面能力独立。 */
     boolean evaluationMode;
+    /** 盲棋训练：棋盘只显示双方将帅，其余棋子隐藏；底部开关可临时显示。 */
+    boolean blindfoldMode;
     private int evaluationDifficultyIndex;
     private boolean evaluationEnginePlaysRed;
     boolean evaluationSession;
@@ -1043,6 +1045,34 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         else startSelfAnalysisSession();
     }
 
+    /**
+     * 盲棋训练：与分析模式同一局面流程，但棋盘默认只显示双方将帅，
+     * 其余棋子隐藏；棋盘页底部“显示棋子”开关可在忘记时临时查看。
+     */
+    void handleLauncherBlindfoldEntry() {
+        blindfoldMode = true;
+        // 盲棋训练默认开启语音播报与语音走棋悬浮球：看不见棋子时靠听记谱维持局面。
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(TtsAnnouncer.PREF_ENABLED, true).apply();
+        ttsAnnouncer.onPrefsChanged();
+        SavedSession saved = readSavedSession(true);
+        if (saved != null) resumeSavedSession(saved);
+        else startSelfAnalysisSession();
+        // 棋盘页构建完成后开启悬浮球（涉及悬浮窗权限时由其内部引导授权）。
+        handler.post(() -> {
+            if (gameScreenVisible && !voiceInputController.isFloatingBallEnabled()) {
+                voiceInputController.toggleFloatingBall();
+            }
+        });
+    }
+
+    /** 关闭盲棋隐藏：恢复棋盘全部棋子显示。 */
+    void exitBlindfoldMode() {
+        if (!blindfoldMode) return;
+        blindfoldMode = false;
+        if (boardView != null) boardView.setPieceDisplayMode(ChessBoardView.PIECE_DISPLAY_VISIBLE);
+    }
+
 
     /** Android 无法在 APK 安装阶段直接执行代码；首次启动时创建指定公共目录。 */
     private void prepareNodeStorageOnFirstLaunch() {
@@ -1477,6 +1507,8 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         boolean reuseGameScreen = gameScreenVisible && boardView != null && !selfAnalysisMode;
         clearSavedSession(false);
         selfAnalysisMode = false;
+        // 正式对弈不是盲棋训练；从盲棋入口进入后点“新建”也回到明棋。
+        exitBlindfoldMode();
         saveLauncherPreferences();
         resetGameState();
         configureGameEngine();
@@ -1774,8 +1806,14 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         if (lastMove == null) return;
         String notation = ChineseNotation.translate(target.copyBoard(), lastMove, true);
         if (notation == null || notation.length() == 0) return;
-        boolean checking = XiangqiRules.isInCheck(target.copyBoard(), redToMoveNow);
-        ttsAnnouncer.announceMove(notation, checking);
+        ttsAnnouncer.announceMove(notation, lastMove == null ? false : wasRedMove(target, lastMove));
+    }
+
+    /** 按走子起点棋盘上的棋子判断刚走的一步是红方还是黑方（用于播报前缀）。 */
+    private boolean wasRedMove(ChessBoardView target, Move lastMove) {
+        char[][] board = target.copyBoard();
+        char piece = board[lastMove.toRow][lastMove.toCol];
+        return XiangqiRules.isPiece(piece) && XiangqiRules.isRed(piece);
     }
 
     TextView manualNavButton(String text, boolean enabled, View.OnClickListener listener) {
@@ -1917,6 +1955,8 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         persistCurrentSession(true);
         stopSearchForPositionChange();
         selfAnalysisMode = false;
+        // 正式对弈不走盲棋隐藏；从盲棋训练切换到对弈时恢复明棋显示。
+        exitBlindfoldMode();
         computerRedActive = false;
         computerBlackActive = false;
         computerRedBlackActive = false;
@@ -2001,6 +2041,9 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         if (enabled && !lastHumanTurnSignal) {
             // 从“不可走”翻到“可走”的瞬间即轮到玩家：通知语音悬浮球开始收音。
             voiceInputController.notifyHumanTurn();
+        } else if (!enabled && lastHumanTurnSignal) {
+            // 玩家走完/电脑开始思考：抑制收音，防止落子音效与语音播报串进识别。
+            voiceInputController.notifyEngineTurnStart();
         }
         lastHumanTurnSignal = enabled;
     }

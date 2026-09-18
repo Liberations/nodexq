@@ -78,7 +78,6 @@ final class VoiceInputController {
     private WindowManager windowManager;
     private View ballView;
     private WindowManager.LayoutParams ballParams;
-    private TextView ballText;
     private volatile boolean capturing;
     private volatile boolean autoMode;
     private Runnable autoTimeoutRunnable;
@@ -171,6 +170,9 @@ final class VoiceInputController {
         showBallView();
         ensureReadyThen(() -> {
             if (ballEnabled) updateBallState(BALL_IDLE_COLOR, "待");
+            // 常开式：面板一出现就把麦克风与背景循环拉起来，
+            // 之后只做抑制/收音状态切换，不再反复开关 AudioRecord。
+            startAmbientLoop();
             Toast.makeText(host, "语音走棋悬浮球已开启：轮到你走棋时自动收音", Toast.LENGTH_LONG).show();
         });
     }
@@ -215,29 +217,93 @@ final class VoiceInputController {
         }, "sherpa-init").start();
     }
 
-    // ==================== 悬浮球视图 ====================
+    // ==================== 悬浮面板视图 ====================
+    //
+    // 面板结构（圆角深色卡片）：
+    //   第一行：状态字（待/候/录/停/载）+ 动态声波条（12 根柱子随状态起伏）
+    //   第二行：实时识别文字（suppressCapture 时显示“对方行棋中…”）
+
+    /** 声波柱数量与面板尺寸。 */
+    private static final int WAVE_BARS = 12;
+    private static final int PANEL_WIDTH_DP = 148;
+
+    private LinearLayout panelView;
+    private TextView ballText;
+    private WaveBarsView waveView;
+    private TextView recognizedText;
 
     private void showBallView() {
-        if (ballView != null) return;
+        if (panelView != null) return;
         windowManager = (WindowManager) host.getSystemService(android.content.Context.WINDOW_SERVICE);
-        ballView = new View(host);
-        ballText = null;
-        // 用 TextView 以便显示状态字（待/录/载）。
-        TextView ball = new TextView(host);
-        ball.setText("棋");
-        ball.setTextSize(13);
-        ball.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        ball.setTextColor(Color.WHITE);
-        ball.setGravity(Gravity.CENTER);
-        ballView = ball;
-        ballText = ball;
-        GradientDrawable bg = new GradientDrawable();
-        bg.setShape(GradientDrawable.OVAL);
-        bg.setColor(BALL_LOADING_COLOR);
-        ball.setBackground(bg);
+
+        LinearLayout panel = new LinearLayout(host);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setGravity(Gravity.CENTER_HORIZONTAL);
+        int pad = host.dp(8);
+        panel.setPadding(pad, pad, pad, pad);
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setCornerRadius(host.dp(12));
+        panelBg.setColor(Color.argb(215, 24, 34, 30));
+        panel.setBackground(panelBg);
+
+        // 第一行：状态字 + 声波条 + 关闭按钮
+        LinearLayout topRow = new LinearLayout(host);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView state = new TextView(host);
+        state.setText("待");
+        state.setTextSize(13);
+        state.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        state.setTextColor(Color.WHITE);
+        GradientDrawable stateBg = new GradientDrawable();
+        stateBg.setCornerRadius(host.dp(9));
+        stateBg.setColor(BALL_LOADING_COLOR);
+        state.setBackground(stateBg);
+        state.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams stateLp = new LinearLayout.LayoutParams(host.dp(22), host.dp(22));
+        stateLp.rightMargin = host.dp(6);
+        topRow.addView(state, stateLp);
+        WaveBarsView wave = new WaveBarsView(host);
+        LinearLayout.LayoutParams waveLp = new LinearLayout.LayoutParams(0, host.dp(24), 1f);
+        topRow.addView(wave, waveLp);
+        TextView closeBtn = new TextView(host);
+        closeBtn.setText("✕");
+        closeBtn.setTextSize(13);
+        closeBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        closeBtn.setTextColor(Color.WHITE);
+        GradientDrawable closeBg = new GradientDrawable();
+        closeBg.setCornerRadius(host.dp(9));
+        closeBg.setColor(Color.argb(220, 175, 62, 55));
+        closeBtn.setBackground(closeBg);
+        closeBtn.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(host.dp(22), host.dp(22));
+        closeLp.leftMargin = host.dp(6);
+        closeBtn.setOnClickListener(v -> closeFloatingBall());
+        topRow.addView(closeBtn, closeLp);
+        panel.addView(topRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.dp(26)));
+
+        // 第二行：实时识别文字
+        TextView recognized = new TextView(host);
+        recognized.setText("轮到你时自动收音");
+        recognized.setTextSize(11);
+        recognized.setTextColor(Color.rgb(198, 214, 205));
+        recognized.setSingleLine(true);
+        recognized.setEllipsize(android.text.TextUtils.TruncateAt.START);
+        recognized.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        textLp.topMargin = host.dp(4);
+        panel.addView(recognized, textLp);
+
+        panelView = panel;
+        ballText = state;
+        waveView = wave;
+        recognizedText = recognized;
+        ballView = panel;
 
         ballParams = new WindowManager.LayoutParams(
-                host.dp(44), host.dp(44),
+                host.dp(PANEL_WIDTH_DP), WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -248,7 +314,7 @@ final class VoiceInputController {
 
         final int[] downPos = new int[2];
         final boolean[] dragged = new boolean[]{false};
-        ball.setOnTouchListener((v, event) -> {
+        panel.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downPos[0] = (int) event.getRawX();
@@ -279,12 +345,15 @@ final class VoiceInputController {
             }
         });
         try {
-            windowManager.addView(ballView, ballParams);
+            windowManager.addView(panelView, ballParams);
         } catch (Exception e) {
+            panelView = null;
             ballView = null;
             ballText = null;
+            waveView = null;
+            recognizedText = null;
             ballEnabled = false;
-            Toast.makeText(host, "悬浮球创建失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(host, "悬浮面板创建失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -293,61 +362,124 @@ final class VoiceInputController {
         ballText.setText(text);
         android.graphics.drawable.Drawable bg = ballText.getBackground();
         if (bg instanceof GradientDrawable) ((GradientDrawable) bg).setColor(color);
-        applyBallAnimation(color);
-    }
-
-    /**
-     * 按状态切换悬浮球动画：
-     * 录音 = 呼吸缩放（持续脉动，提示正在收音）；
-     * 等待收音（候）= 轻微缩放；
-     * 待命/暂停/加载 = 静止。
-     */
-    private void applyBallAnimation(int color) {
-        if (ballView == null) return;
-        ballView.animate().cancel();
-        ballView.setScaleX(1f);
-        ballView.setScaleY(1f);
-        ballView.setAlpha(1f);
-        if (color == BALL_RECORDING_COLOR) {
-            startBreathingAnimation();
-        } else if (color == BALL_LOADING_COLOR && "候".equals(ballText.getText().toString())) {
-            ballView.animate().scaleX(1.08f).scaleY(1.08f).setDuration(500L)
-                    .withEndAction(() -> {
-                        if (ballView != null) {
-                            ballView.animate().scaleX(1f).scaleY(1f).setDuration(500L).start();
-                        }
-                    }).start();
+        if (waveView != null) {
+            // 录音=大振幅随机波动；候选等待=小振幅慢波；其余=静止低柱。
+            if (color == BALL_RECORDING_COLOR) {
+                waveView.setMode(WaveBarsView.MODE_RECORDING);
+            } else if (color == BALL_LOADING_COLOR && "候".equals(text)) {
+                waveView.setMode(WaveBarsView.MODE_WAITING);
+            } else {
+                waveView.setMode(WaveBarsView.MODE_IDLE);
+            }
         }
     }
 
-    /** 录音呼吸动画：缩放在 1.0～1.12 间往复，同时带一圈透明度变化，直到状态切换被打断。 */
-    private void startBreathingAnimation() {
-        if (ballView == null) return;
-        ballView.animate().scaleX(1.12f).scaleY(1.12f).alpha(0.75f).setDuration(600L)
-                .withEndAction(() -> {
-                    if (ballView == null) return;
-                    ballView.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(600L)
-                            .withEndAction(() -> {
-                                if (ballView != null && capturing) startBreathingAnimation();
-                            }).start();
-                }).start();
+    /** 更新悬浮面板第二行的实时识别文字；主线程调用。 */
+    private void updateRecognizedText(String text) {
+        if (recognizedText == null) return;
+        recognizedText.setText(text == null || text.length() == 0
+                ? "轮到你时自动收音" : text);
     }
 
     private void removeBallView() {
-        if (ballView == null || windowManager == null) return;
-        ballView.animate().cancel();
+        if (panelView == null || windowManager == null) return;
+        panelView.animate().cancel();
+        if (waveView != null) waveView.stopTicker();
         try {
-            windowManager.removeView(ballView);
+            windowManager.removeView(panelView);
         } catch (Exception ignored) {
         }
+        panelView = null;
         ballView = null;
         ballText = null;
+        waveView = null;
+        recognizedText = null;
     }
 
-    /** Activity 返回/离开棋盘页时调用：停止录音但保留悬浮球与引擎。 */
+    /**
+     * 动态声波条：N 根圆角柱，用 handler 周期刷新高度模拟声波。
+     * 独立 View，避免 overlay 面板整体重绘。
+     */
+    private static final class WaveBarsView extends View {
+        static final int MODE_IDLE = 0;
+        static final int MODE_WAITING = 1;
+        static final int MODE_RECORDING = 2;
+
+        private final android.os.Handler ui = new android.os.Handler(
+                android.os.Looper.getMainLooper());
+        private final float[] levels = new float[WAVE_BARS];
+        private int mode = MODE_IDLE;
+        private boolean ticking;
+        private final android.graphics.Paint paint = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        WaveBarsView(android.content.Context context) {
+            super(context);
+            paint.setColor(Color.rgb(120, 220, 160));
+        }
+
+        void setMode(int newMode) {
+            mode = newMode;
+            if (mode != MODE_IDLE && !ticking) {
+                ticking = true;
+                ui.post(ticker);
+            }
+            invalidate();
+        }
+
+        void stopTicker() {
+            ticking = false;
+            ui.removeCallbacks(ticker);
+        }
+
+        private final Runnable ticker = new Runnable() {
+            @Override public void run() {
+                if (!ticking || mode == MODE_IDLE) return;
+                float step = mode == MODE_RECORDING ? 0.34f : 0.10f;
+                for (int i = 0; i < levels.length; i++) {
+                    levels[i] = java.lang.Math.max(0f, java.lang.Math.min(1f,
+                            levels[i] + (float) (Math.random() * 2 - 1) * step));
+                }
+                invalidate();
+                ui.postDelayed(this, mode == MODE_RECORDING ? 70L : 160L);
+            }
+        };
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            float width = getWidth();
+            float height = getHeight();
+            if (width <= 0 || height <= 0) return;
+            float barWidth = width / (WAVE_BARS * 2f - 1f);
+            for (int i = 0; i < WAVE_BARS; i++) {
+                float level;
+                if (mode == MODE_RECORDING) {
+                    level = levels[i] < 0.12f ? 0.12f : levels[i];
+                } else if (mode == MODE_WAITING) {
+                    level = 0.18f;
+                } else {
+                    level = 0.10f;
+                }
+                float barHeight = Math.max(height * level, hostDp(2));
+                float left = i * barWidth * 2;
+                android.graphics.RectF rect = new android.graphics.RectF(
+                        left, (height - barHeight) / 2f, left + barWidth,
+                        (height + barHeight) / 2f);
+                canvas.drawRoundRect(rect, barWidth / 2f, barWidth / 2f, paint);
+            }
+        }
+
+        private float hostDp(float v) {
+            return v * getResources().getDisplayMetrics().density;
+        }
+    }
+
+    /** Activity 返回/离开棋盘页时调用：彻底停止常开录音，保留悬浮球与引擎。 */
     void pauseBallSession() {
         if (!ballEnabled) return;
         stopCaptureInternal();
+        suppressCapture = false;
         if (ballText != null) updateBallState(BALL_IDLE_COLOR, "待");
     }
 
@@ -356,50 +488,73 @@ final class VoiceInputController {
     }
 
     /**
-     * 点击悬浮球：在“暂停”和“待命”间切换，不销毁悬浮球。
-     * 暂停 = 本回合不自动收音（录到一半也会立刻停止并丢弃）；再点一下恢复自动收音。
-     * 彻底关闭请用棋盘菜单的“悬浮球：开/关”。
+     * 点击悬浮面板主体：立即丢弃当前会话并重新拾音（重新开一条识别会话）。
+     * 不再承担暂停/恢复职责——彻底关闭走面板右上角 ✕。
      */
     private void toggleBallPaused() {
+        if (!ballEnabled || !recognizerReady) return;
+        // 丢弃当前识别会话（清掉已识别的半截内容），立即开新会话重新听。
+        ballPaused = false;
+        suppressCapture = false;
+        host.handler.removeCallbacks(startCaptureRunnable);
+        startAmbientLoop();
+        scheduleAutoTimeout();
+        updateBallState(BALL_RECORDING_COLOR, "录");
+        host.handler.post(() -> updateRecognizedText("重新拾音，请说走法"));
+    }
+
+    /** 面板右上角 ✕：停止录音、释放悬浮窗；菜单“悬浮球”开关复位。 */
+    private void closeFloatingBall() {
         if (!ballEnabled) return;
-        ballPaused = !ballPaused;
-        if (ballPaused) {
-            stopCaptureInternal();
-            updateBallState(BALL_PAUSED_COLOR, "停");
-            Toast.makeText(host, "语音走棋已暂停，点小球恢复", Toast.LENGTH_SHORT).show();
-        } else {
-            updateBallState(BALL_IDLE_COLOR, "待");
-            Toast.makeText(host, "语音走棋已恢复：轮到你走棋时自动收音", Toast.LENGTH_SHORT).show();
-            notifyHumanTurn();
-        }
+        ballEnabled = false;
+        ballPaused = false;
+        suppressCapture = false;
+        stopCaptureInternal();
+        removeBallView();
+        Toast.makeText(host, "语音走棋悬浮窗已关闭", Toast.LENGTH_SHORT).show();
     }
 
     /**
-     * 由 Activity 在轮到玩家行棋时调用：悬浮球开启且空闲时自动开始 30 秒收音。
-     * 为避免电脑落子音效/语音播报串进麦克风，延迟 {@link #AUTO_CAPTURE_DELAY_MS} 再开录；
-     * 若延迟期间又轮到电脑（极端快速场景）或用户已暂停，则不再启动。
+     * 由 Activity 在轮到玩家行棋时调用。
+     * 常开识别下这里是“会话重置点”：清掉对方走棋期间的残留识别，延迟
+     * {@link #AUTO_CAPTURE_DELAY_MS}（等音效/语音播报播完）后开始新的识别会话。
      */
     void notifyHumanTurn() {
-        if (!ballEnabled || ballPaused || !recognizerReady || capturing
+        if (!ballEnabled || ballPaused || !recognizerReady
                 || host.boardView == null || host.boardView.isEditMode() || host.isRescoring) {
             return;
         }
-        updateBallState(BALL_LOADING_COLOR, "候");
-        host.handler.removeCallbacks(startCaptureRunnable);
-        host.handler.postDelayed(startCaptureRunnable, AUTO_CAPTURE_DELAY_MS);
+        exitSuppressAndListen();
+    }
+
+    /** Activity 在电脑开始思考/走子时调用：立刻抑制收音，防止播报串进识别。 */
+    void notifyEngineTurnStart() {
+        if (!ballEnabled) return;
+        enterSuppress();
     }
 
     private final Runnable startCaptureRunnable = new Runnable() {
         @Override public void run() {
-            if (!ballEnabled || ballPaused || capturing || !recognizerReady) {
+            if (!ballEnabled || ballPaused || !recognizerReady) {
                 if (ballEnabled && !ballPaused) updateBallState(BALL_IDLE_COLOR, "待");
                 return;
             }
-            updateBallState(BALL_RECORDING_COLOR, "录");
-            startCapture();
+            // 常开式：确保 AudioRecord 与背景循环都在（理论上已在），然后开新识别会话。
+            suppressCapture = false;
+            startAmbientLoop();
             scheduleAutoTimeout();
+            updateBallState(BALL_RECORDING_COLOR, "录");
         }
     };
+
+    /** 丢弃上一句的识别流，在仍打开的 AudioRecord 上开一个新识别流继续收音。 */
+    private synchronized void restartStreamForNewUtterance() {
+        if (!capturing || audioRecord == null || !recognizerReady) return;
+        OnlineStream stream = recognizer.createStream("");
+        liveStream = stream;
+        recogThread = new Thread(() -> readLoopContinuous(audioRecord, stream), "sherpa-asr");
+        recogThread.start();
+    }
 
     private void scheduleAutoTimeout() {
         cancelAutoTimeout();
@@ -427,6 +582,132 @@ final class VoiceInputController {
             host.handler.removeCallbacks(autoTimeoutRunnable);
             autoTimeoutRunnable = null;
         }
+    }
+
+    // ==================== 常开式连续识别（悬浮球模式） ====================
+
+    /**
+     * 悬浮球模式的“常开识别”：AudioRecord 与识别线程全程运行，不走每回合停/启。
+     * 抑制（对方走棋、电脑思考）期间只丢弃音频、不喂给识别器，
+     * 轮到玩家时重置识别流再开始接收，等价于一个干净的会话起点。
+     * 端点判定（说完一句）在玩家回合内依旧触发识别结果。
+     */
+    private volatile boolean suppressCapture;
+
+    /** 对方走棋/电脑思考开始：抑制收音（丢弃音频），悬浮球回“待”。 */
+    private void enterSuppress() {
+        if (!ballEnabled || suppressCapture) return;
+        suppressCapture = true;
+        if (capturing) {
+            // 结束当前识别句（识别线程退出、流丢弃），AudioRecord 继续运行；
+            // 抑制期间 readLoopContinuous 仍读麦克风但只丢帧，避免系统音频缓冲堆积。
+            capturing = false; // 结束旧识别循环
+            liveStream = null;
+            recogThread = null;
+            // 立即重开一条“只读不喂”的常开循环，保证抑制期结束后能立刻用。
+            startAmbientLoop();
+        }
+        cancelAutoTimeout();
+        updateBallState(BALL_IDLE_COLOR, "待");
+        host.handler.post(() -> updateRecognizedText("对方行棋中，暂停收音…"));
+    }
+
+    /** 打开（或确保）常开 AudioRecord，并启动只读不喂的背景循环。 */
+    private synchronized void startAmbientLoop() {
+        if (!recognizerReady) return;
+        try {
+            if (audioRecord == null
+                    || audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                int minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE,
+                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
+                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                        Math.max(minBuf, SAMPLE_RATE));
+                if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                    throw new IllegalStateException("AudioRecord 初始化失败");
+                }
+                audioRecord.startRecording();
+            }
+            if (capturing) return; // 已有循环在跑
+            capturing = true;
+            OnlineStream stream = recognizer.createStream("");
+            liveStream = stream;
+            recogThread = new Thread(() -> readLoopContinuous(audioRecord, stream), "sherpa-asr");
+            recogThread.start();
+        } catch (Exception e) {
+            capturing = false;
+            liveStream = null;
+            Toast.makeText(host, "无法启动录音：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 抑制结束（轮到玩家）：等音效/播报播完后重置识别流并开始新的 30s 收音会话。 */
+    private void exitSuppressAndListen() {
+        if (!ballEnabled || ballPaused || !recognizerReady) return;
+        suppressCapture = false;
+        updateBallState(BALL_LOADING_COLOR, "候");
+        host.handler.removeCallbacks(startCaptureRunnable);
+        host.handler.postDelayed(startCaptureRunnable, AUTO_CAPTURE_DELAY_MS);
+    }
+
+    /**
+     * 常开识别主循环：mic 一直读，但抑制期间只丢弃不喂流；
+     * 端点触发后由 readLoop 自行通知收尾，等待上层重置会话。
+     */
+    private void readLoopContinuous(AudioRecord record, OnlineStream stream) {
+        short[] buffer = new short[SAMPLE_RATE / 10]; // 100ms 一块
+        float[] samples = new float[buffer.length];
+        while (capturing && record == audioRecord && recognizer != null) {
+            int read = record.read(buffer, 0, buffer.length);
+            if (read <= 0) continue;
+            if (suppressCapture) continue; // 抑制：丢弃音频，不喂识别器
+            for (int i = 0; i < read; i++) samples[i] = buffer[i] / 32768f;
+            stream.acceptWaveform(samples, SAMPLE_RATE);
+            while (recognizer.isReady(stream)) recognizer.decode(stream);
+            final String text = recognizer.getResult(stream).getText();
+            if (text != null && text.length() > 0) {
+                host.handler.post(() -> {
+                    if (liveText != null) liveText.setText(text);
+                    updateRecognizedText(text);
+                });
+            }
+            if (recognizer.isEndpoint(stream)) {
+                host.handler.post(this::finishAutoCapture);
+                return;
+            }
+        }
+    }
+
+    /**
+     * 玩家回合内端点触发（说完一句）：立刻收尾本句、应用结果，
+     * 然后**不断开麦克风**——马上重开识别会话继续听，实现真正的连续实时识别。
+     * 仅当对方已在走棋（抑制中）或用户暂停时才停住。
+     */
+    private synchronized void finishAutoCapture() {
+        if (!capturing) return;
+        OnlineStream stream = liveStream;
+        String heard = "";
+        if (recognizer != null && stream != null) {
+            try {
+                stream.inputFinished();
+                while (recognizer.isReady(stream)) recognizer.decode(stream);
+                heard = recognizer.getResult(stream).getText();
+            } catch (Exception ignored) {
+            }
+        }
+        cancelAutoTimeout();
+        applyHeard(heard == null ? "" : heard, true);
+        if (suppressCapture || ballPaused) {
+            // 对方已在走棋：保持抑制待下一回合；或用户已暂停，回“停”。
+            updateBallState(ballPaused ? BALL_PAUSED_COLOR : BALL_IDLE_COLOR,
+                    ballPaused ? "停" : "待");
+            return;
+        }
+        // 麦克风保持运行，立即开下一句识别（无 3.5s 延迟：走子成功后本回合
+        // 会经 enterSuppress 抑制；匹配失败时玩家可以马上重说）。
+        updateBallState(BALL_RECORDING_COLOR, "录");
+        startAmbientLoop();
+        scheduleAutoTimeout();
     }
 
     // ==================== 收音对话框（菜单入口） ====================
@@ -498,58 +779,13 @@ final class VoiceInputController {
             capturing = true;
             OnlineStream stream = recognizer.createStream("");
             liveStream = stream;
-            recogThread = new Thread(() -> readLoop(stream, false), "sherpa-asr");
+            recogThread = new Thread(() -> readLoopContinuous(audioRecord, stream), "sherpa-asr");
             recogThread.start();
         } catch (Exception e) {
             capturing = false;
             liveStream = null;
             Toast.makeText(host, "无法启动录音：" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
-    }
-
-    private void readLoop(OnlineStream stream, boolean silent) {
-        short[] buffer = new short[SAMPLE_RATE / 10]; // 100ms 一块
-        float[] samples = new float[buffer.length];
-        while (capturing && audioRecord != null && recognizer != null) {
-            int read = audioRecord.read(buffer, 0, buffer.length);
-            if (read <= 0) continue;
-            for (int i = 0; i < read; i++) samples[i] = buffer[i] / 32768f;
-            stream.acceptWaveform(samples, SAMPLE_RATE);
-            while (recognizer.isReady(stream)) recognizer.decode(stream);
-            final String text = recognizer.getResult(stream).getText();
-            if (text != null && text.length() > 0) {
-                host.handler.post(() -> {
-                    if (liveText != null) liveText.setText(text);
-                });
-            }
-            if (recognizer.isEndpoint(stream)) {
-                // 一句话说完（静音判定）：立即收尾并应用结果。
-                if (silent) {
-                    host.handler.post(this::finishAutoCapture);
-                } else {
-                    host.handler.post(this::finishDialogCapture);
-                }
-                return;
-            }
-        }
-    }
-
-    /** 悬浮球模式：端点触发后收尾并应用识别结果。 */
-    private synchronized void finishAutoCapture() {
-        if (!capturing) return;
-        OnlineStream stream = liveStream;
-        String heard = "";
-        if (recognizer != null && stream != null) {
-            try {
-                stream.inputFinished();
-                while (recognizer.isReady(stream)) recognizer.decode(stream);
-                heard = recognizer.getResult(stream).getText();
-            } catch (Exception ignored) {
-            }
-        }
-        stopCaptureInternal();
-        updateBallState(BALL_IDLE_COLOR, "待");
-        applyHeard(heard == null ? "" : heard, true);
     }
 
     private synchronized void stopCaptureInternal() {
@@ -592,30 +828,36 @@ final class VoiceInputController {
 
     // ==================== 结果应用 ====================
 
+    /**
+     * 应用语音识别结果：拼音模糊匹配 → 纠正为标准记谱。
+     * 悬浮面板是唯一的反馈通道：成功显示纠正后的走法（如“码八进七→马八进七”），
+     * 失败显示“未识别到”；不再弹错误 Toast。
+     */
     private void applyHeard(String heard, boolean fromBall) {
         if (heard.trim().length() == 0) {
-            if (!fromBall) Toast.makeText(host, "没有听清，请再试一次", Toast.LENGTH_SHORT).show();
+            host.handler.post(() -> updateRecognizedText("未识别到，请再说一次"));
             return;
         }
         if (host.boardView == null) return;
-        List<Move> candidates = VoiceMoveMatcher.match(
-                host.boardView.copyBoard(), host.boardView.isRedToMove(), heard);
+        char[][] board = host.boardView.copyBoard();
+        boolean redToMove = host.boardView.isRedToMove();
+        List<Move> candidates = VoiceMoveMatcher.match(board, redToMove, heard);
         if (candidates.isEmpty()) {
             host.appendLog("语音走棋：识别“" + heard + "”，但当前没有匹配的合法走法。\n");
-            if (!fromBall) {
-                Toast.makeText(host, "识别“" + heard + "”，但当前没有匹配的合法走法",
-                        Toast.LENGTH_LONG).show();
-            } else {
-                Toast.makeText(host, "没有匹配“" + heard + "”的走法，请用手指走棋或长按小球重说",
-                        Toast.LENGTH_LONG).show();
-            }
+            host.handler.post(() -> updateRecognizedText(
+                    "未识别到“" + heard + "”对应的走法，请重说"));
             return;
         }
         Move best = candidates.get(0);
+        String corrected = ChineseNotation.translate(board, best, false);
         if (candidates.size() == 1 || highConfidence(heard, best)) {
+            host.handler.post(() -> updateRecognizedText(
+                    heard.trim() + " → " + corrected));
             playHeardMove(best, heard);
             return;
         }
+        // 多候选：面板展示首选纠正结果，同时弹窗让玩家确认。
+        host.handler.post(() -> updateRecognizedText(heard.trim() + " → " + corrected + "？"));
         showCandidates(candidates.subList(0, Math.min(candidates.size(), 6)), heard);
     }
 
@@ -648,7 +890,7 @@ final class VoiceInputController {
         if (host.boardView == null) return;
         // 玩家语音走子与手指走子同一条链路：交给棋盘做合法性与送将校验。
         if (!host.boardView.playMove(move)) {
-            Toast.makeText(host, "走法失效，请重新语音输入", Toast.LENGTH_SHORT).show();
+            host.handler.post(() -> updateRecognizedText("走法失效，请重说"));
             return;
         }
         host.appendLog("语音走棋：识别“" + heard + "”→ "

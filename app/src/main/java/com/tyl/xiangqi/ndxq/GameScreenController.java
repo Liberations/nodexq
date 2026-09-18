@@ -57,6 +57,13 @@ final class GameScreenController {
         host.boardView = new ChessBoardView(host, false);
         host.applyCurrentSkinToBoard(host.boardView, false);
         host.boardView.setListener(host);
+        if (host.blindfoldMode) {
+            // 盲棋默认“隐藏”态；轮廓图 empty_chess 支持外置皮肤覆盖。
+            host.boardView.setOutlineBitmap(ChessBoardView.resolveOutlineBitmap(host,
+                    host.storageManager().skinDirectory(
+                            host.sanitizeSkinName(host.currentSkinName))));
+            host.boardView.setPieceDisplayMode(ChessBoardView.PIECE_DISPLAY_HIDDEN);
+        }
         host.boardView.setOnLongClickListener(v -> {
             host.showBoardClipboardDialog();
             return true;
@@ -75,6 +82,13 @@ final class GameScreenController {
         root.addView(host.bottomPlayerLabel, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, host.dp(MainActivity.PLAYER_ROW_HEIGHT_DP)));
         host.editModeBottomLabel = host.bottomPlayerLabel;
+
+        // 盲棋训练：底部三态开关 隐藏→轮廓→显示 循环切换。
+        if (host.blindfoldMode) {
+            Button blindToggle = buildBlindfoldToggle();
+            root.addView(blindToggle, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, host.dp(38)));
+        }
 
         LinearLayout tabs = new LinearLayout(host);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
@@ -258,5 +272,30 @@ final class GameScreenController {
         host.styleAnalysisButton();
         host.styleComputerSideButtons();
         return outer;
+    }
+
+    /**
+     * 盲棋训练底部开关：点击在 隐藏 → 轮廓 → 显示 三态间循环。
+     * 隐藏 = 非将帅棋子完全不可见；轮廓 = 用 empty_chess 轮廓图替换
+     * （外置皮肤可提供 empty_chess.png 覆盖，缺失回退内置）；显示 = 正常皮肤。
+     */
+    private Button buildBlindfoldToggle() {
+        Button toggle = host.compactButton(blindToggleLabel(
+                host.boardView.getPieceDisplayMode()));
+        toggle.setTextSize(12);
+        toggle.setOnClickListener(v -> {
+            int next = (host.boardView.getPieceDisplayMode() + 1) % 3;
+            host.boardView.setPieceDisplayMode(next);
+            toggle.setText(blindToggleLabel(next));
+        });
+        return toggle;
+    }
+
+    private static String blindToggleLabel(int mode) {
+        switch (mode) {
+            case ChessBoardView.PIECE_DISPLAY_HIDDEN: return "当前:隐藏";
+            case ChessBoardView.PIECE_DISPLAY_OUTLINE: return "当前:轮廓";
+            default: return "当前:显示";
+        }
     }
 }

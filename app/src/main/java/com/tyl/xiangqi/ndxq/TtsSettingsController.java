@@ -36,7 +36,7 @@ final class TtsSettingsController {
         panel.setPadding(activity.dp(14), activity.dp(8), activity.dp(14), activity.dp(4));
 
         TextView explain = new TextView(activity);
-        explain.setText("开启后每完成一步走子会用系统语音朗读中文记谱（如“炮二平五”），将军时追加“将军”提示。播报与“当前声音”音效相互独立，需要系统已安装中文语音数据。");
+        explain.setText("开启后每完成一步走子会用系统语音朗读中文记谱（如“炮二平五”）。播报与“当前声音”音效相互独立，需要系统已安装中文语音数据。");
         explain.setTextSize(11);
         explain.setTextColor(Color.rgb(105, 110, 106));
         explain.setLineSpacing(0f, 1.15f);
@@ -131,7 +131,8 @@ final class TtsSettingsController {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         android.widget.Button preview = activity.compactButton("试听播报");
-        preview.setOnClickListener(v -> announcer.previewWith(rate[0], voiceName[0], "炮二平五，将军"));
+        preview.setOnClickListener(v -> announcer.previewWith(rate[0], voiceName[0],
+                TtsAnnouncer.buildSpokenText("炮二平五", true)));
         panel.addView(preview, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, activity.dp(38)));
 

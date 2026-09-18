@@ -96,6 +96,9 @@ final class LauncherController {
         Button analysisEntry = launcherButton(activity, "分析模式");
         root.addView(analysisEntry, launcherEntryLp(activity, 50, 10));
         analysisEntry.setOnClickListener(v -> activity.handleLauncherAnalysisEntry());
+        Button blindfold = launcherButton(activity, "盲棋训练");
+        root.addView(blindfold, launcherEntryLp(activity, 50, 10));
+        blindfold.setOnClickListener(v -> activity.handleLauncherBlindfoldEntry());
         Button recent = launcherButton(activity, "最近对局");
         root.addView(recent, launcherEntryLp(activity, 50, 10));
         recent.setOnClickListener(v -> activity.showRecentGamesScreen());

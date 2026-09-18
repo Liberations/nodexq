@@ -140,15 +140,36 @@ final class TtsAnnouncer {
         applySavedConfiguration();
     }
 
-    void announceMove(String moveText, boolean checking) {
+    /**
+     * 播报一步走法：红/黑方前缀 + 逐字停顿（如“红炮，二，平，五”）。
+     *
+     * <p>isRedMove：刚走的一步是否红方（用于“红炮/黑马”前缀）。
+     * 将军不另行 TTS 播报——项目内置 check.wav 走系统音效通道，更即时。</p>
+     */
+    void announceMove(String moveText, boolean isRedMove) {
         if (tts == null || failed) return;
-        String text = checking ? moveText + "，将军" : moveText;
+        String spoken = buildSpokenText(moveText, isRedMove);
         if (!ready) {
             // 引擎连接中：挂起最新一条，onInit 成功后补放。
-            pendingAnnounce = text;
+            pendingAnnounce = spoken;
             return;
         }
-        speakNow(text);
+        speakNow(spoken);
+    }
+
+    /**
+     * 组装播报文本：前缀“红/黑”+ 把记谱每个字之间插入顿号式逗号，
+     * 让 TTS 在每个字之间产生自然停顿（“红炮，二，平，五”）。
+     * 多字前缀（“前/后/中/数字”+ 棋子）同样逐字停顿。
+     */
+    static String buildSpokenText(String notation, boolean isRedMove) {
+        if (notation == null || notation.length() == 0) return "";
+        StringBuilder sb = new StringBuilder(notation.length() * 2 + 2);
+        sb.append(isRedMove ? "红" : "黑");
+        for (int i = 0; i < notation.length(); i++) {
+            sb.append('，').append(notation.charAt(i));
+        }
+        return sb.toString();
     }
 
     /** 系统当前可用的中文语音（已按名称排序）；引擎未就绪时返回空列表。 */

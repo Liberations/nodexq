@@ -20,6 +20,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -126,8 +127,39 @@ public class ChessBoardView extends View {
      * 在主线程重复解码约 7MB 的棋盘/棋子像素并立即触发回收。
      */
     private static final Object BUNDLED_SKIN_LOCK = new Object();
+    /** 外置皮肤棋子文件基础名（与 pieces 数组一一对应）。 */
+    private static final String[] SKIN_PIECE_NAMES = {"br","bn","bb","ba","bk","bc","bp",
+            "rr","rn","rb","ra","rk","rc","rp"};
+    /**
+     * 兼容命名（与 SKIN_PIECE_NAMES 一一对应）：w 前缀 = 红方（white）。
+     * 下标 0..6 是黑方，标准名 br…bp 本身就是 b 前缀，替代名用不存在的占位；
+     * 下标 7..13 是红方，rr…rp 对应 wr…wp。
+     */
+    private static final String[] ALTERNATE_SKIN_PIECE_NAMES = {"", "", "", "", "", "", "",
+            "wr","wn","wb","wa","wk","wc","wp"};
     private static Bitmap bundledBoardBitmap;
     private static final Map<Character, Bitmap> bundledPieceBitmapMap = new HashMap<Character, Bitmap>();
+    /** 外置皮肤缺失棋子时逐枚回退用的内置棋子缓存（baseName → bitmap）。 */
+    private static final Map<String, Bitmap> bundledPieceDecodeCache = new HashMap<String, Bitmap>();
+    /** 内置棋子资源 id 表（与 ensureBundledSkinDecoded 的 ids 数组一致）。 */
+    private static final Map<String, Integer> BUNDLED_PIECE_IDS = new HashMap<String, Integer>();
+
+    static {
+        BUNDLED_PIECE_IDS.put("br", R.drawable.br);
+        BUNDLED_PIECE_IDS.put("bn", R.drawable.bn);
+        BUNDLED_PIECE_IDS.put("bb", R.drawable.bb);
+        BUNDLED_PIECE_IDS.put("ba", R.drawable.ba);
+        BUNDLED_PIECE_IDS.put("bk", R.drawable.bk);
+        BUNDLED_PIECE_IDS.put("bc", R.drawable.bc);
+        BUNDLED_PIECE_IDS.put("bp", R.drawable.bp);
+        BUNDLED_PIECE_IDS.put("rr", R.drawable.rr);
+        BUNDLED_PIECE_IDS.put("rn", R.drawable.rn);
+        BUNDLED_PIECE_IDS.put("rb", R.drawable.rb);
+        BUNDLED_PIECE_IDS.put("ra", R.drawable.ra);
+        BUNDLED_PIECE_IDS.put("rk", R.drawable.rk);
+        BUNDLED_PIECE_IDS.put("rc", R.drawable.rc);
+        BUNDLED_PIECE_IDS.put("rp", R.drawable.rp);
+    }
     /** 只缓存最近使用的一套外部皮肤，防止皮肤越切越多导致内存常驻增长。 */
     private static String cachedExternalSkinPath = "";
     private static long cachedExternalSkinSignature = Long.MIN_VALUE;
@@ -162,6 +194,13 @@ public class ChessBoardView extends View {
     private int selectedRow = -1;
     private int selectedCol = -1;
     private Move lastMove;
+    /** 盲棋训练渲染模式：棋子的可见程度（双方将帅始终正常显示）。 */
+    public static final int PIECE_DISPLAY_HIDDEN = 0;
+    public static final int PIECE_DISPLAY_OUTLINE = 1;
+    public static final int PIECE_DISPLAY_VISIBLE = 2;
+    private int pieceDisplayMode = PIECE_DISPLAY_VISIBLE;
+    /** 轮廓模式用图：当前皮肤目录下的 empty_chess（外置可覆盖），缺失时回退内置资源。 */
+    private Bitmap outlineBitmap;
     private Listener listener;
 
     private float touchDownX;
@@ -304,6 +343,10 @@ public class ChessBoardView extends View {
     }
 
     private static boolean ensureExternalSkinDecoded(File skinDir) {
+        return ensureExternalSkinDecoded(skinDir, null);
+    }
+
+    private static boolean ensureExternalSkinDecoded(File skinDir, Context fallbackContext) {
         try {
             if (skinDir == null || !skinDir.isDirectory()) return false;
             String path;
@@ -321,14 +364,22 @@ public class ChessBoardView extends View {
                 if (newBoard == null) return false;
                 Map<Character, Bitmap> decoded = new HashMap<Character, Bitmap>();
                 char[] pieces = new char[]{'r','n','b','a','k','c','p','R','N','B','A','K','C','P'};
-                String[] names = new String[]{"br","bn","bb","ba","bk","bc","bp",
-                        "rr","rn","rb","ra","rk","rc","rp"};
                 for (int i = 0; i < pieces.length; i++) {
-                    Bitmap bitmap = decodeSkinBitmap(skinDir, names[i]);
+                    Bitmap bitmap = decodeSkinBitmap(skinDir, SKIN_PIECE_NAMES[i]);
                     if (bitmap == null) {
-                        if (!newBoard.isRecycled()) newBoard.recycle();
-                        recycleMap(decoded);
-                        return false;
+                        // 标准名没有时再试兼容名（w 前缀 = 红方 white，b 前缀 = 黑方 black）。
+                        bitmap = decodeSkinBitmap(skinDir, ALTERNATE_SKIN_PIECE_NAMES[i]);
+                    }
+                    if (bitmap == null) {
+                        // 单个棋子图缺失时用内置皮肤对应棋子补位，不再让整套皮肤失败。
+                        bitmap = fallbackContext == null ? null
+                                : decodeBundledPiece(fallbackContext.getApplicationContext(),
+                                        SKIN_PIECE_NAMES[i]);
+                        if (bitmap == null) {
+                            if (!newBoard.isRecycled()) newBoard.recycle();
+                            recycleMap(decoded);
+                            return false;
+                        }
                     }
                     decoded.put(pieces[i], bitmap);
                 }
@@ -348,6 +399,17 @@ public class ChessBoardView extends View {
         }
     }
 
+    /** 读取内置皮肤的某一枚棋子；每个资源只解码一次并缓存。 */
+    private static Bitmap decodeBundledPiece(Context context, String baseName) {
+        Integer id = BUNDLED_PIECE_IDS.get(baseName);
+        if (id == null) return null;
+        Bitmap cached = bundledPieceDecodeCache.get(baseName);
+        if (cached != null && !cached.isRecycled()) return cached;
+        Bitmap bitmap = BitmapFactory.decodeResource(context.getResources(), id);
+        if (bitmap != null) bundledPieceDecodeCache.put(baseName, bitmap);
+        return bitmap;
+    }
+
     private static long skinSignature(File dir) {
         String[] names = new String[]{"board","br","bn","bb","ba","bk","bc","bp",
                 "rr","rn","rb","ra","rk","rc","rp"};
@@ -358,14 +420,44 @@ public class ChessBoardView extends View {
             signature = signature * 31L + file.length();
             signature = signature * 31L + file.lastModified();
         }
+        // empty_chess 是可选覆盖：存在与否也纳入签名，保证增删后缓存正确失效。
+        File empty = findSkinBitmapFile(dir, "empty_chess");
+        if (empty != null) {
+            signature = signature * 31L + empty.length();
+            signature = signature * 31L + empty.lastModified();
+        }
         return signature;
+    }
+
+    /**
+     * 解析皮肤轮廓图 empty_chess：外置皮肤目录可提供覆盖版本；
+     * 未提供时回退到 APK 内置 empty_chess 资源。返回 null 表示内置资源也不可用。
+     */
+    public static Bitmap resolveOutlineBitmap(Context context, File skinDir) {
+        Bitmap fromSkin = skinDir == null ? null : decodeSkinBitmap(skinDir, "empty_chess");
+        if (fromSkin != null) return fromSkin;
+        return BitmapFactory.decodeResource(context.getResources(), R.drawable.empty_chess);
     }
 
     private static File findSkinBitmapFile(File dir, String baseName) {
         String[] extensions = new String[]{".png", ".webp", ".jpg", ".jpeg"};
+        // 先按标准小写名精确匹配；没有再大小写不敏感地兼容 rk.png / RK.PNG / Rk.webp 等。
         for (String ext : extensions) {
             File file = new File(dir, baseName + ext);
             if (file.isFile()) return file;
+        }
+        String lower = baseName.toLowerCase(Locale.ROOT);
+        String[] files = dir.list();
+        if (files != null) {
+            for (String name : files) {
+                int dot = name.lastIndexOf('.');
+                if (dot <= 0) continue;
+                if (!lower.equals(name.substring(0, dot).toLowerCase(Locale.ROOT))) continue;
+                String ext = name.substring(dot).toLowerCase(Locale.ROOT);
+                for (String allowed : extensions) {
+                    if (allowed.equals(ext)) return new File(dir, name);
+                }
+            }
         }
         return null;
     }
@@ -376,7 +468,7 @@ public class ChessBoardView extends View {
      * 先完整解码到临时对象，15 张图片全部有效后才替换当前皮肤。
      */
     public boolean loadSkin(File skinDir, int requestedPieceSizePercent, float[] corners) {
-        if (!ensureExternalSkinDecoded(skinDir)) return false;
+        if (!ensureExternalSkinDecoded(skinDir, getContext())) return false;
         String path;
         try { path = skinDir.getCanonicalPath(); }
         catch (Exception e) { path = skinDir.getAbsolutePath(); }
@@ -1101,7 +1193,16 @@ public class ChessBoardView extends View {
             for (int c = 0; c < 9; c++) {
                 char p = board[r][c];
                 if (!XiangqiRules.isPiece(p)) continue;
-                Bitmap bm = pieceBitmapMap.get(p);
+                boolean king = p == 'K' || p == 'k';
+                // 盲棋模式：将帅始终正常显示；其余棋子按三态渲染。
+                Bitmap bm;
+                if (king || pieceDisplayMode == PIECE_DISPLAY_VISIBLE) {
+                    bm = pieceBitmapMap.get(p);
+                } else if (pieceDisplayMode == PIECE_DISPLAY_OUTLINE) {
+                    bm = outlineBitmap;
+                } else {
+                    continue;
+                }
                 if (bm == null) continue;
                 float cx = cellCenterX(r, c);
                 float cy = cellCenterY(r, c);
@@ -1110,6 +1211,28 @@ public class ChessBoardView extends View {
                 canvas.drawBitmap(bm, null, dst, paint);
             }
         }
+    }
+
+    /**
+     * 盲棋训练渲染模式：HIDDEN 完全隐藏（将帅除外）、OUTLINE 用 empty_chess
+     * 轮廓图替换全部非将帅棋子、VISIBLE 正常显示。详见 drawPieces。
+     */
+    public void setPieceDisplayMode(int mode) {
+        int normalized = mode < PIECE_DISPLAY_HIDDEN ? PIECE_DISPLAY_VISIBLE
+                : (mode > PIECE_DISPLAY_VISIBLE ? PIECE_DISPLAY_VISIBLE : mode);
+        if (pieceDisplayMode == normalized) return;
+        pieceDisplayMode = normalized;
+        invalidate();
+    }
+
+    public int getPieceDisplayMode() {
+        return pieceDisplayMode;
+    }
+
+    /** 更新轮廓模式用图（外置皮肤的 empty_chess，或内置默认图）。 */
+    public void setOutlineBitmap(Bitmap bitmap) {
+        outlineBitmap = bitmap;
+        if (pieceDisplayMode == PIECE_DISPLAY_OUTLINE) invalidate();
     }
 
     private void drawSelection(Canvas canvas) {
