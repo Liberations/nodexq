@@ -86,7 +86,7 @@ import java.util.concurrent.Executors;
 
 /** 节点象棋 V20.5。 */
 public final class MainActivity extends Activity implements ChessBoardView.Listener {
-    static final String VERSION_NAME = "V20.5";
+    static final String VERSION_NAME = BuildConfig.VERSION_NAME;
     static final String PREFS = "human_vs_engine_v1";
     static final String MANUAL_UCI_PREFIX = "manual_uci::";
     static final String SAVED_ANALYSIS_RECORD = "saved_analysis_record";
@@ -420,6 +420,7 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     final SkinRuntimeController skinRuntimeController =
             new SkinRuntimeController(this);
     final TtsAnnouncer ttsAnnouncer = new TtsAnnouncer(this);
+    final BlindfoldPlaybackController blindfoldPlayback = new BlindfoldPlaybackController(this);
     final VoiceInputController voiceInputController = new VoiceInputController(this);
     private final SituationScoreController situationScoreController =
             new SituationScoreController(this);
@@ -1070,7 +1071,28 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
     void exitBlindfoldMode() {
         if (!blindfoldMode) return;
         blindfoldMode = false;
+        blindfoldPlayback.stop();
         if (boardView != null) boardView.setPieceDisplayMode(ChessBoardView.PIECE_DISPLAY_VISIBLE);
+    }
+
+    /** 盲棋底部“人机难度”按钮：复用 DifficultyProfiles 22 档选择。 */
+    void showBlindfoldDifficultyPicker() {
+        blindfoldPlayback.showDifficultyPicker();
+    }
+
+    /**
+     * 盲棋读谱弹窗里的人机难度切换：更新自选档位并按该档配置重新下发
+     * 引擎参数（引擎槽位、线程数、搜索限制、脱库回合与和棋规则）。
+     */
+    void applyBlindfoldDifficulty(int index) {
+        selectedDifficultyIndex = clamp(index, 0, DIFFICULTIES.length - 1);
+        difficultyPreferences.saveCustomSelection(selectedDifficultyIndex, enginePlaysRed);
+        configureGameEngine();
+        saveLauncherPreferences();
+    }
+
+    static int difficultyCount() {
+        return DIFFICULTIES.length;
     }
 
 
