@@ -2,6 +2,7 @@ package com.tyl.xiangqi.ndxq;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -24,7 +25,7 @@ import com.k2fsa.sherpa.onnx.FeatureConfig;
 import com.k2fsa.sherpa.onnx.OnlineRecognizer;
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OnlineStream;
-import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig;
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig;
 import com.k2fsa.sherpa.onnx.OnlineModelConfig;
 import com.tyl.xiangqi.ndxq.core.ChineseNotation;
 import com.tyl.xiangqi.ndxq.core.Move;
@@ -159,12 +160,17 @@ final class VoiceInputController {
         new Thread(() -> {
             try {
                 OnlineModelConfig modelConfig = new OnlineModelConfig();
-                modelConfig.setZipformer2Ctc(new OnlineZipformer2CtcModelConfig(
-                        MODEL_DIR + "model.int8.onnx"));
+                // 2025-06-30 中文流式 zipformer-xlarge transducer（多中文集合并训练，
+                // 约 6 亿参数 int8）：encoder/decoder/joiner 三件套，精度显著优于
+                // 旧 zipformer-small-ctc。建模单元为字级+byte fallback，
+                // 棋子/数字词汇完整覆盖，无需 BPE 词表。
+                OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
+                transducer.setEncoder(MODEL_DIR + "encoder.int8.onnx");
+                transducer.setDecoder(MODEL_DIR + "decoder.onnx");
+                transducer.setJoiner(MODEL_DIR + "joiner.int8.onnx");
+                modelConfig.setTransducer(transducer);
                 modelConfig.setTokens(MODEL_DIR + "tokens.txt");
-                // bbpe.model 供识别结果做 BPE 后处理；模型卡要求一起传入。
-                modelConfig.setBpeVocab(MODEL_DIR + "bbpe.model");
-                modelConfig.setNumThreads(2);
+                modelConfig.setNumThreads(4);
                 modelConfig.setProvider("cpu");
                 OnlineRecognizerConfig config = new OnlineRecognizerConfig();
                 config.setModelConfig(modelConfig);
@@ -276,38 +282,56 @@ final class VoiceInputController {
         waveView = wave;
         recognizedText = recognized;
         ballView = panel;
+        // 首次布局后锁定测量高度：拖动重排时高度不变（宽度本身固定）。
+        panel.post(() -> {
+            if (panel == panelView && panel.getHeight() > 0) {
+                panel.setMinimumHeight(panel.getHeight());
+            }
+        });
 
-        // 应用内悬浮：加在 appRoot 顶层，占位小、不遮按键，可拖动。
+        // 应用内悬浮：加在 appRoot 顶层，占位小、不遮按键，可拖动且记忆位置。
+        // 固定宽度并锁定测量高度，拖动重排时面板尺寸不会被父容器压小。
         FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
                 host.dp(PANEL_WIDTH_DP), ViewGroup.LayoutParams.WRAP_CONTENT);
         panelLp.gravity = Gravity.TOP | Gravity.START;
-        panelLp.leftMargin = host.dp(8);
-        panelLp.topMargin = host.dp(320);
+        SharedPreferences sp = host.getSharedPreferences(MainActivity.PREFS, android.content.Context.MODE_PRIVATE);
+        panelLp.leftMargin = sp.getInt(PREF_PANEL_X, host.dp(8));
+        panelLp.topMargin = sp.getInt(PREF_PANEL_Y, host.dp(320));
 
-        final int[] downPos = new int[2];
+        // 按下时记录起点；拖动基于“起始坐标 + 位移”计算，避免逐帧累加漂移。
+        final int[] downRaw = new int[2];
+        final int[] startLeftTop = new int[2];
         final boolean[] dragged = new boolean[]{false};
         panel.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    downPos[0] = (int) event.getRawX();
-                    downPos[1] = (int) event.getRawY();
+                    downRaw[0] = (int) event.getRawX();
+                    downRaw[1] = (int) event.getRawY();
+                    startLeftTop[0] = panel.getLeft();
+                    startLeftTop[1] = panel.getTop();
                     dragged[0] = false;
-                    return false;
+                    // 必须消费 DOWN 才能继续收到 MOVE/UP，否则拖不动。
+                    return true;
                 case MotionEvent.ACTION_MOVE: {
-                    int dx = (int) event.getRawX() - downPos[0];
-                    int dy = (int) event.getRawY() - downPos[1];
-                    if (Math.abs(dx) > host.dp(6) || Math.abs(dy) > host.dp(6)) {
+                    int dx = (int) event.getRawX() - downRaw[0];
+                    int dy = (int) event.getRawY() - downRaw[1];
+                    if (dragged[0] || Math.abs(dx) > host.dp(6) || Math.abs(dy) > host.dp(6)) {
                         dragged[0] = true;
-                        panelLp.leftMargin += dx;
-                        panelLp.topMargin += dy;
-                        downPos[0] = (int) event.getRawX();
-                        downPos[1] = (int) event.getRawY();
+                        panelLp.leftMargin = clampPanelX(startLeftTop[0] + dx, panel);
+                        panelLp.topMargin = clampPanelY(startLeftTop[1] + dy, panel);
                         panel.setLayoutParams(panelLp);
                     }
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
-                    if (!dragged[0]) toggleBallPaused();
+                    if (dragged[0]) {
+                        sp.edit()
+                                .putInt(PREF_PANEL_X, panelLp.leftMargin)
+                                .putInt(PREF_PANEL_Y, panelLp.topMargin)
+                                .apply();
+                    } else {
+                        toggleBallPaused();
+                    }
                     return true;
                 default:
                     return false;
@@ -316,6 +340,13 @@ final class VoiceInputController {
         try {
             ballHost = host.appRoot;
             ballHost.addView(panelView, panelLp);
+            // 布局完成后按面板实际尺寸做一次边界收敛（含历史保存值越界的情况）。
+            panelView.post(() -> {
+                if (panelView == null) return;
+                panelLp.leftMargin = clampPanelX(panelLp.leftMargin, panelView);
+                panelLp.topMargin = clampPanelY(panelLp.topMargin, panelView);
+                panelView.setLayoutParams(panelLp);
+            });
         } catch (Exception e) {
             panelView = null;
             ballView = null;
@@ -325,6 +356,32 @@ final class VoiceInputController {
             ballEnabled = false;
             Toast.makeText(host, "悬浮面板创建失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
+    }
+
+    /** 面板横纵位置的记忆键（像素）。 */
+    private static final String PREF_PANEL_X = "voice_panel_x";
+    private static final String PREF_PANEL_Y = "voice_panel_y";
+
+    /**
+     * 拖动边界。注意不能用 parent.getHeight()：appRoot 的高度每次布局都
+     * 等于“剩余空间”，面板被拖到接近底部时上限会随之缩小，下一帧又被
+     * 进一步压缩，形成正反馈直到面板高度归零。这里改用窗口可视高度
+     * （activity 窗口减去状态栏/导航栏 insets 的 appRoot 顶/底 padding）
+     * 作为固定边界，面板尺寸永远不变。
+     */
+    private int clampPanelX(int x, View panel) {
+        ViewGroup root = host.appRoot;
+        int maxX = root == null || root.getWidth() == 0
+                ? x : Math.max(0, root.getWidth() - panel.getWidth());
+        return Math.max(0, Math.min(x, maxX));
+    }
+
+    private int clampPanelY(int y, View panel) {
+        ViewGroup root = host.appRoot;
+        if (root == null || root.getWidth() == 0) return Math.max(0, y);
+        int bottom = root.getHeight() - root.getPaddingTop() - root.getPaddingBottom();
+        int maxY = Math.max(0, bottom - panel.getHeight());
+        return Math.max(0, Math.min(y, maxY));
     }
 
     private void updateBallState(int color, String text) {
@@ -671,6 +728,12 @@ final class VoiceInputController {
             }
         }
         cancelAutoTimeout();
+        // 本句识别线程在端点触发后已经退出；必须先把会话状态复位，
+        // 否则下方 startAmbientLoop 看到 capturing==true 会直接返回，
+        // “未识别到/弹候选”之后面板虽然显示“录”，实际已不再读麦克风。
+        capturing = false;
+        liveStream = null;
+        recogThread = null;
         applyHeard(heard == null ? "" : heard, true);
         if (suppressCapture || ballPaused) {
             // 对方已在走棋：保持抑制待下一回合；或用户已暂停，回“停”。

@@ -382,7 +382,7 @@ final class SettingsController {
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
         infoBox.addView(aboutInfoRow("QQ交流群：511645431"),
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
-        infoBox.addView(aboutInfoRow("魔改：Liberation"),
+        infoBox.addView(aboutInfoRow("魔改：Liberation QQ：910689331"),
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.dp(34)));
         infoBox.addView(aboutLinkRow("开源地址：https://github.com/Liberations/nodexq",
                 "https://github.com/Liberations/nodexq"),

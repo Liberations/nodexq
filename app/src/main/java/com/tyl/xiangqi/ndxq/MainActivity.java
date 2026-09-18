@@ -1086,6 +1086,11 @@ public final class MainActivity extends Activity implements ChessBoardView.Liste
         blindfoldPlayback.showDifficultyPicker();
     }
 
+    /** 难度选择弹窗关闭后同步刷新棋盘页底部按钮文字。 */
+    void refreshBlindfoldDifficulty() {
+        gameScreenController.refreshBlindfoldDifficulty();
+    }
+
     /**
      * 盲棋读谱弹窗里的人机难度切换：更新自选档位并按该档配置重新下发
      * 引擎参数（引擎槽位、线程数、搜索限制、脱库回合与和棋规则）。

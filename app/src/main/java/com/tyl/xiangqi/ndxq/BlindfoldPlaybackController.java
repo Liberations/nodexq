@@ -156,6 +156,8 @@ final class BlindfoldPlaybackController {
                 .setItems(labels, (d, which) -> {
                     host.applyBlindfoldDifficulty(which);
                     refreshButtonText();
+                    // 底部“难度：xx”按钮同步刷新。
+                    host.refreshBlindfoldDifficulty();
                     host.appendLog("盲棋：人机难度已切换为 "
                             + host.difficultyDisplayName(which) + "。\n");
                 })

@@ -280,6 +280,20 @@ final class GameScreenController {
      * 隐藏 = 全部棋子完全不可见（将帅同样隐藏）；轮廓 = 用 empty 轮廓图替换
      * （外置皮肤可提供 empty.png/webp/jpg 覆盖，缺失回退内置）；显示 = 正常皮肤。
      */
+    /** 盲棋底部“人机难度”按钮：难度切换后由 {@link #refreshBlindfoldDifficulty()} 实时更新文字。 */
+    private Button blindfoldDifficultyBtn;
+
+    /** 选完难度后刷新底部按钮显示（主线程调用）。 */
+    void refreshBlindfoldDifficulty() {
+        if (blindfoldDifficultyBtn != null) {
+            blindfoldDifficultyBtn.setText(blindDifficultyLabel());
+        }
+    }
+
+    private String blindDifficultyLabel() {
+        return "难度：" + host.difficultyDisplayName(host.selectedDifficultyIndex);
+    }
+
     private LinearLayout buildBlindfoldRow() {
         LinearLayout row = new LinearLayout(host);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -293,9 +307,10 @@ final class GameScreenController {
             host.boardView.setPieceDisplayMode(next);
             displayBtn.setText(blindToggleLabel(next));
         });
-        Button difficultyBtn = host.compactButton(host.difficultyDisplayName(host.selectedDifficultyIndex));
+        Button difficultyBtn = host.compactButton(blindDifficultyLabel());
         difficultyBtn.setTextSize(12);
         difficultyBtn.setOnClickListener(v -> host.showBlindfoldDifficultyPicker());
+        blindfoldDifficultyBtn = difficultyBtn;
         Button playbackBtn = host.compactButton("播放棋谱");
         playbackBtn.setTextSize(12);
         playbackBtn.setOnClickListener(v -> host.blindfoldPlayback.onButtonClicked());
